@@ -302,15 +302,13 @@ class TexasHoldem extends GameSession {
 
     const seatIndex = this.seats.findIndex(s => s.playerId === playerId);
     if (seatIndex === -1) return { error: '玩家不在座位上' };
-    if (seatIndex !== this.currentPlayerIndex) return { error: '还没轮到你' };
+    if (!this.showdownPhase && seatIndex !== this.currentPlayerIndex) return { error: '还没轮到你' };
 
     const seat = this.seats[seatIndex];
-    if (seat.folded) return { error: '你已无法操作' };
-    if (!this.showdownPhase && seat.allIn) return { error: '你已 All-in，无法操作' };
 
-    // Showdown phase: show or muck
+    // Showdown phase: allow folded/all-in players to show/muck
     if (this.showdownPhase) {
-      if (action !== 'show' && action !== 'muck') return { error: '请选择亮牌或埋牌' };
+      if (action !== 'show' && action !== 'muck') return { error: '请选择亮牌或不亮' };
       const player = this.room.getPlayer(playerId);
       this.showdownChoices[playerId] = action;
 
