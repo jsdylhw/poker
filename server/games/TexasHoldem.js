@@ -80,6 +80,9 @@ class TexasHoldem extends GameSession {
     this.sidePots = [];
     this.handOver = false;
     this.results = null;
+    this.showdownPhase = false;
+    this.showdownChoices = {};
+    this.showdownOrder = [];
     this.actionHistory = [];
 
     // Reset seats
@@ -363,10 +366,20 @@ class TexasHoldem extends GameSession {
           this.pot += seat.roundBet;
           seat.roundBet = 0;
         }
-        this._awardPot([remainingPlayers[0]]);
+        this._calculateSidePots();
+        this._awardSidePots([{
+          playerId: remainingPlayers[0].playerId,
+          seatIndex: this._getSeatIndex(remainingPlayers[0].playerId),
+          hand: remainingPlayers[0].hand,
+          score: 0, name: '',
+        }]);
+        this.results = {
+          winners: [{ playerId: remainingPlayers[0].playerId, amount: remainingPlayers[0].wonAmount }],
+        };
       }
-      this.handOver = true;
-      this._stopTurnTimer();
+      // Enter showdown so everyone (incl. folded) can show cards
+      // Fold-all win: winner doesn't auto-show, they choose like everyone
+      this._startShowdownDecisions(true);
       return { publicAction: result };
     }
 
@@ -785,6 +798,8 @@ class TexasHoldem extends GameSession {
         : (this.currentPlayerIndex !== -1 ? this.seats[this.currentPlayerIndex]?.playerId : null),
       handOver: this.handOver,
       showdownPhase: this.showdownPhase,
+      showdownChoices: this.showdownPhase ? this.showdownChoices : null,
+      showdownOrder: this.showdownPhase ? this.showdownOrder : null,
       seats: this.seats.map((s, i) => ({
         playerId: s.playerId,
         playerName: this.room.getPlayer(s.playerId)?.name || '',
@@ -923,52 +938,59 @@ class TexasHoldem extends GameSession {
     return Math.max(0, Math.ceil(this.turnTime - elapsed));
   }
 
-  _startShowdownDecisions() {
+  _startShowdownDecisions(skipAutoShow = false) {
     this.phase = 'showdown';
     this.showdownPhase = true;
     this.showdownChoices = {};
 
-    // Auto-evaluate all active players to find winner
-    this._calculateSidePots();
     const activePlayers = this.seats.filter(s => !s.folded);
-    const evaluations = [];
-    for (const seat of activePlayers) {
-      const allCards = [...seat.hand, ...this.communityCards];
-      const evalResult = evaluateHand(allCards);
-      evaluations.push({
-        playerId: seat.playerId,
-        seatIndex: this._getSeatIndex(seat.playerId),
-        hand: seat.hand,
-        ...evalResult,
+
+    // Auto-evaluate if not already done (e.g. from fold-all path)
+    if (!this.results) {
+      this._calculateSidePots();
+      const evaluations = [];
+      for (const seat of activePlayers) {
+        const allCards = [...seat.hand, ...this.communityCards];
+        const evalResult = evaluateHand(allCards);
+        evaluations.push({
+          playerId: seat.playerId,
+          seatIndex: this._getSeatIndex(seat.playerId),
+          hand: seat.hand,
+          ...evalResult,
+        });
+      }
+
+      this._awardSidePots(evaluations);
+
+      evaluations.sort((a, b) => b.score - a.score);
+      this.results = {
+        evaluations,
+        pot: this.pot,
+        sidePots: this.sidePots,
+        winners: this.seats
+          .filter(s => s.wonAmount > 0)
+          .map(s => ({
+            playerId: s.playerId,
+            amount: s.wonAmount,
+            hand: evaluations.find(e => e.playerId === s.playerId),
+          })),
+      };
+    }
+
+    // Winner(s) auto-show (unless fold-all win where winner can choose)
+    const winnerIds = new Set(this.results.winners.map(w => w.playerId));
+    if (!skipAutoShow) {
+      winnerIds.forEach(pid => {
+        this.showdownChoices[pid] = 'show';
       });
     }
 
-    // Award pot using side pots logic
-    this._awardSidePots(evaluations);
-
-    evaluations.sort((a, b) => b.score - a.score);
-    this.results = {
-      evaluations,
-      pot: this.pot,
-      sidePots: this.sidePots,
-      winners: this.seats
-        .filter(s => s.wonAmount > 0)
-        .map(s => ({
-          playerId: s.playerId,
-          amount: s.wonAmount,
-          hand: evaluations.find(e => e.playerId === s.playerId),
-        })),
-    };
-
-    // Winner(s) auto-show
-    const winnerIds = new Set(this.results.winners.map(w => w.playerId));
-    winnerIds.forEach(pid => {
-      this.showdownChoices[pid] = 'show';
-    });
-
     // Build order: winners first, then other active, then folded
     this.showdownOrder = [];
-    winnerIds.forEach(pid => this.showdownOrder.push(pid));
+    winnerIds.forEach(pid => {
+      this.showdownOrder.push(pid);
+      if (skipAutoShow) this.showdownChoices[pid] = null;
+    });
     activePlayers.forEach(s => {
       if (!winnerIds.has(s.playerId)) {
         this.showdownOrder.push(s.playerId);

@@ -15,6 +15,8 @@ class TexasHoldemUI extends BaseGameUI {
     this.timerSeconds = 0;
     this._handDealt = false;
     this._lastCommCount = 0;
+    this._lastHandKey = '';
+    this._lastCommKey = '';
   }
 
   render() {
@@ -139,9 +141,13 @@ class TexasHoldemUI extends BaseGameUI {
     if (!container) return;
 
     const count = cards.length;
-    const prev = this._lastCommCount;
 
-    if (count === 0 && prev > 0) this._lastCommCount = 0;
+    // Skip if unchanged (avoids double-render from dual state updates)
+    const cardKey = cards.map(c => c.id).join(',');
+    if (count === this._lastCommCount && cardKey === this._lastCommKey) return;
+    this._lastCommKey = cardKey;
+
+    if (count === 0 && this._lastCommCount > 0) this._lastCommCount = 0;
     const currentPrev = this._lastCommCount;
 
     // Step 1: always render 5 placeholder divs
@@ -180,7 +186,7 @@ class TexasHoldemUI extends BaseGameUI {
     const myIdx = ps.mySeatIndex;
     const seats = ps.seats || pub.seats || [];
 
-    const sdChoices = ps.showdownChoices || {};
+    const sdChoices = ps.showdownChoices || pub.showdownChoices || {};
     const sdWinners = ps.showdownPhase && ps.results?.winners ? new Set(ps.results.winners.map(w => w.playerId)) : new Set();
 
     container.innerHTML = seats.map((s, i) => {
@@ -249,6 +255,11 @@ class TexasHoldemUI extends BaseGameUI {
       this._handDealt = false;
       return;
     }
+
+    // Skip if hand hasn't changed (avoids double-render from dual state updates)
+    const handKey = hand.map(c => c.id).sort().join(',');
+    if (handKey === this._lastHandKey) return;
+    this._lastHandKey = handKey;
 
     // Animate on first deal of each hand
     if (!this._handDealt && hand.length > 0) {

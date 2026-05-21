@@ -410,7 +410,8 @@ test('TexasHoldem - edge cases', async (t) => {
     const pid2 = getCurrentPlayer(game);
     game.handleAction(pid2, 'fold', {});
 
-    // Third player should win immediately
+    // Winner auto-awarded, now in showdown - process all show/muck
+    playHand(game);
     assert.equal(game.handOver, true);
   });
 
