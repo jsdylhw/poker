@@ -102,6 +102,9 @@ class RoomManager {
     const player = room.getPlayer(playerId);
     if (!player) return null;
 
+    // Reject if player is already online (another tab has this identity)
+    if (player.isOnline) return { rejected: true };
+
     // Update socket mapping
     const oldSocketId = player.socketId;
     if (oldSocketId) {

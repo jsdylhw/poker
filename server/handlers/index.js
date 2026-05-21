@@ -8,9 +8,14 @@ function registerAllHandlers(io, roomManager) {
     // Send assigned player id
     socket.on('conn:register', ({ playerId } = {}, callback) => {
       if (playerId) {
-        // Attempt reconnect
+        // Only reconnect if player is offline (prevents tab duplication)
         const result = roomManager.reconnectSocket(socket.id, playerId);
         if (result) {
+          if (result.rejected) {
+            // Another tab already has this player - start fresh
+            callback({ reconnected: false });
+            return;
+          }
           socket.join(result.room.code);
           callback({
             playerId: result.player.id,

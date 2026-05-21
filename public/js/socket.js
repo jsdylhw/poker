@@ -24,6 +24,12 @@ const SocketClient = (() => {
           if (res.room.gameType) {
             Router.navigate('room-lobby');
           }
+        } else {
+          // Reconnect rejected (another tab active) or not found - start fresh
+          localStorage.removeItem('playerId');
+          playerId = null;
+          AppState.set('player', null);
+          AppState.set('room', null);
         }
       });
     });

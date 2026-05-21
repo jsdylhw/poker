@@ -6,10 +6,13 @@ function registerGameHandlers(io, socket, roomManager) {
 
     const room = roomManager.getRoomByPlayer(playerId);
     if (!room) return callback && callback({ error: '房间不存在' });
-    if (room.hostId !== playerId) return callback && callback({ error: '只有房主可以开始游戏' });
 
-    // Next hand: existing session
+    // Next hand: existing session - only dealer can start
     if (room.state === 'ended' && room.gameSession) {
+      const dealerSeat = room.gameSession.seats[room.gameSession.dealerIndex];
+      if (!dealerSeat || dealerSeat.playerId !== playerId) {
+        return callback && callback({ error: '只有庄家可以开始下一局' });
+      }
       const result = room.gameSession.start();
       if (result && result.error) return callback && callback({ error: result.error });
       room.state = 'playing';
@@ -17,7 +20,8 @@ function registerGameHandlers(io, socket, roomManager) {
       return callback && callback({ success: true });
     }
 
-    // First start
+    // First start - only host
+    if (room.hostId !== playerId) return callback && callback({ error: '只有房主可以开始游戏' });
     if (!room.canStart()) return callback && callback({ error: '人数不足或有人未准备' });
 
     let GameEngine;

@@ -739,6 +739,9 @@ class TexasHoldem extends GameSession {
       showdownPhase: this.showdownPhase,
       showdownChoices: this.showdownPhase ? this.showdownChoices : null,
       showdownOrder: this.showdownPhase ? this.showdownOrder : null,
+      isShowdownWinner: this.showdownPhase && this.showdownChoices[playerId] === 'show'
+        && this.results?.winners?.some(w => w.playerId === playerId),
+      myHandRevealed: this.showdownPhase && this.showdownChoices[playerId] === 'show',
       isMyTurn: this.showdownPhase
         ? (this.showdownChoices[playerId] === null && !this.handOver)
         : (this.currentPlayerIndex === seatIdx && !this.handOver),
@@ -815,6 +818,7 @@ class TexasHoldem extends GameSession {
         playerName: this.room.getPlayer(s.playerId)?.name || '',
         chips: s.chips,
         wonAmount: s.wonAmount,
+        totalBet: s.totalBet,
         hand: s.hand,
       })),
       communityCards: this.communityCards,
@@ -829,9 +833,9 @@ class TexasHoldem extends GameSession {
 
     // Showdown phase
     if (this.showdownPhase) {
-      if (this.showdownChoices[playerId] !== null) return []; // already decided
+      if (this.showdownChoices[playerId] !== null) return []; // already decided (incl. winner)
       if (!this.showdownOrder.includes(playerId)) return [];
-      return ['show', 'muck'];
+      return ['show', 'muck']; // show = 亮牌, muck = 不亮
     }
 
     if (this.currentPlayerIndex !== seatIndex) return [];
@@ -922,51 +926,77 @@ class TexasHoldem extends GameSession {
   }
 
   _startShowdownDecisions() {
+    this.phase = 'showdown';
     this.showdownPhase = true;
     this.showdownChoices = {};
-    // Build order: active players clockwise from dealer
-    this.showdownOrder = [];
-    const n = this.seats.length;
-    for (let i = 1; i <= n; i++) {
-      const idx = (this.dealerIndex + i) % n;
-      const seat = this.seats[idx];
-      if (!seat.folded) {
-        this.showdownOrder.push(seat.playerId);
-        this.showdownChoices[seat.playerId] = null; // undecided
-      }
+
+    // Auto-evaluate all active players to find winner
+    this._calculateSidePots();
+    const activePlayers = this.seats.filter(s => !s.folded);
+    const evaluations = [];
+    for (const seat of activePlayers) {
+      const allCards = [...seat.hand, ...this.communityCards];
+      const evalResult = evaluateHand(allCards);
+      evaluations.push({
+        playerId: seat.playerId,
+        seatIndex: this._getSeatIndex(seat.playerId),
+        hand: seat.hand,
+        ...evalResult,
+      });
     }
-    this.currentPlayerIndex = this._getSeatIndex(this.showdownOrder[0]);
-    this._startTurnTimer();
+
+    // Award pot using side pots logic
+    this._awardSidePots(evaluations);
+
+    evaluations.sort((a, b) => b.score - a.score);
+    this.results = {
+      evaluations,
+      pot: this.pot,
+      sidePots: this.sidePots,
+      winners: this.seats
+        .filter(s => s.wonAmount > 0)
+        .map(s => ({
+          playerId: s.playerId,
+          amount: s.wonAmount,
+          hand: evaluations.find(e => e.playerId === s.playerId),
+        })),
+    };
+
+    // Winner(s) auto-show
+    const winnerIds = new Set(this.results.winners.map(w => w.playerId));
+    winnerIds.forEach(pid => {
+      this.showdownChoices[pid] = 'show';
+    });
+
+    // Build order: winners first, then other active, then folded
+    this.showdownOrder = [];
+    winnerIds.forEach(pid => this.showdownOrder.push(pid));
+    activePlayers.forEach(s => {
+      if (!winnerIds.has(s.playerId)) {
+        this.showdownOrder.push(s.playerId);
+        this.showdownChoices[s.playerId] = null;
+      }
+    });
+    // Folded players can also show
+    this.seats.forEach(s => {
+      if (s.folded && !this.showdownOrder.includes(s.playerId)) {
+        this.showdownOrder.push(s.playerId);
+        this.showdownChoices[s.playerId] = null;
+      }
+    });
+
+    // Find first undecided player
+    const firstUndecided = this.showdownOrder.find(pid => this.showdownChoices[pid] === null);
+    if (firstUndecided) {
+      this.currentPlayerIndex = this._getSeatIndex(firstUndecided);
+      this._startTurnTimer();
+    } else {
+      this._finishShowdown();
+    }
   }
 
   _finishShowdown() {
     this.showdownPhase = false;
-    this.phase = 'showdown';
-
-    // Count show/muck decisions
-    const showPlayers = [];
-    for (const seat of this.seats) {
-      if (seat.folded) continue;
-      if (this.showdownChoices[seat.playerId] === 'muck') {
-        seat.folded = true; // mucking = forfeiting
-      } else {
-        showPlayers.push(seat);
-      }
-    }
-
-    // Evaluate and award
-    if (showPlayers.length === 1) {
-      this._awardPot([showPlayers[0]]);
-      this.results = {
-        winners: showPlayers.map(s => ({
-          playerId: s.playerId,
-          amount: s.wonAmount,
-        })),
-      };
-    } else if (showPlayers.length >= 2) {
-      this._doShowdown();
-    }
-
     this.handOver = true;
     this._stopTurnTimer();
   }

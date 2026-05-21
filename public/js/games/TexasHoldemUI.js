@@ -68,7 +68,7 @@ class TexasHoldemUI extends BaseGameUI {
     const isMe = action.playerId === this.myPlayerId;
 
     if (action.isShowdown) {
-      this.showMessage(action.action === 'show' ? `${name} 亮牌` : `${name} 埋牌`);
+      this.showMessage(action.action === 'show' ? `${name} 亮牌` : `${name} 不亮`);
       Sound[action.action === 'show' ? 'chip' : 'fold']();
       if (action.handOver) this._updateUI();
       return;
@@ -204,9 +204,15 @@ class TexasHoldemUI extends BaseGameUI {
       if (isSB) roleTags.push('<span class="seat-role" style="background:#3498db;color:#fff">SB</span>');
       if (isBB) roleTags.push('<span class="seat-role" style="background:#e74c3c;color:#fff">BB</span>');
 
-      // Show hand cards if hand is over or this is me
+      // Show hand cards: showdown winner auto-shown, per-player choice, or me
+      const sdChoices = ps.showdownChoices || {};
+      const sdWinners = ps.showdownPhase && ps.results?.winners ? new Set(ps.results.winners.map(w => w.playerId)) : new Set();
+      const isSdWinner = sdWinners.has(s.playerId);
+      const choseShow = sdChoices[s.playerId] === 'show';
+      const revealHand = (pub.handOver && !s.folded) || isMe || isSdWinner || choseShow;
+
       let cardsHtml = '';
-      if ((pub.handOver && !s.folded) || isMe) {
+      if (revealHand) {
         const handCards = isMe ? (ps.hand || []) : (s.hand || []);
         if (handCards.length > 0) {
           cardsHtml = '<div class="seat-cards">' +
@@ -232,7 +238,8 @@ class TexasHoldemUI extends BaseGameUI {
           <div class="seat-chips">💰 ${s.chips}</div>
           ${betStr ? `<div class="seat-bet">${betStr}</div>` : ''}
           ${s.allIn ? '<div style="color:#e74c3c;font-size:11px;font-weight:bold">ALL IN</div>' : ''}
-          ${ps.showdownChoices && ps.showdownChoices[s.playerId] ? `<div style="font-size:11px;color:${ps.showdownChoices[s.playerId]==='show'?'#2ecc71':'#e74c3c'}">${ps.showdownChoices[s.playerId]==='show'?'亮牌':'埋牌'}</div>` : ''}
+          ${ps.showdownChoices && ps.showdownChoices[s.playerId] ? `<div style="font-size:11px;color:${ps.showdownChoices[s.playerId]==='show'?'#2ecc71':'#e74c3c'}">${ps.showdownChoices[s.playerId]==='show'?'亮牌':'不亮'}</div>` : ''}
+          ${isSdWinner ? '<div style="font-size:11px;color:#f1c40f;font-weight:bold">赢家</div>' : ''}
           ${cardsHtml}
         </div>
       `;
@@ -270,13 +277,25 @@ class TexasHoldemUI extends BaseGameUI {
     if (ps.showdownPhase && ps.isMyTurn) {
       bar.innerHTML = `
         <button class="btn-success action-btn" data-action="show">亮牌</button>
-        <button class="btn-danger action-btn" data-action="muck">埋牌</button>
+        <button class="btn-danger action-btn" data-action="muck">不亮</button>
       `;
       bar.querySelectorAll('.action-btn').forEach(btn => {
         btn.addEventListener('click', () => {
           SocketClient.emit('game:action', { action: btn.dataset.action });
         });
       });
+      return;
+    }
+
+    // Showdown phase: winner auto-shown, waiting for others
+    if (ps.showdownPhase && ps.isShowdownWinner) {
+      bar.innerHTML = '<span style="color:#f1c40f;font-size:14px;font-weight:bold">赢家 - 已亮牌</span>';
+      return;
+    }
+
+    // Showdown phase: already decided or waiting
+    if (ps.showdownPhase) {
+      bar.innerHTML = '<span style="color:rgba(255,255,255,0.5);font-size:13px">等待其他人选择...</span>';
       return;
     }
 
@@ -287,7 +306,7 @@ class TexasHoldemUI extends BaseGameUI {
         html += this._rebuyHtml(settings);
       }
       html += ps.handOver
-        ? '<button class="btn-gold" id="btn-next-hand">下一局</button>'
+        ? (this._isDealer(ps) ? '<button class="btn-gold" id="btn-next-hand">开始下一局</button>' : '<span style="color:rgba(255,255,255,0.5);font-size:13px">等待庄家开始下一局...</span>')
         : '<span style="color:rgba(255,255,255,0.5);font-size:13px">等待其他玩家操作...</span>';
       bar.innerHTML = html;
       this._bindNextHandBtn();
@@ -450,15 +469,22 @@ class TexasHoldemUI extends BaseGameUI {
 
     const winners = results.winners || [];
     if (winners.length > 0) {
-      const winnerNames = winners.map(w => {
-        const player = this._findSeatPlayer(w.playerId);
-        const name = player ? player.playerName : w.playerId;
-        const handName = w.hand ? w.hand.name : '';
-        return `<div class="winner-name">🏆 ${name} +${w.amount}</div>
-          ${handName ? `<div class="winner-hand">${handName}</div>` : ''}`;
+      const winnerIds = new Set(winners.map(w => w.playerId));
+      const lines = ps.playerStats.map(s => {
+        const playerName = s.playerName;
+        if (winnerIds.has(s.playerId)) {
+          const w = winners.find(ww => ww.playerId === s.playerId);
+          const handName = w && w.hand ? w.hand.name : '';
+          return `<div class="winner-name">${playerName} 赢了 +${s.wonAmount}</div>
+            ${handName ? `<div class="winner-hand">${handName}</div>` : ''}`;
+        } else {
+          // Non-winners always lost this hand: show -totalBet
+          const mySeat = ps.seats.find(ss => ss.playerId === s.playerId);
+          const lost = mySeat ? -(mySeat.totalBet || 0) : (s.current - s.buyin);
+          return `<div class="winner-name" style="color:#e74c3c">${playerName} ${lost}</div>`;
+        }
       }).join('');
-
-      html += `<div class="winner-overlay">${winnerNames}</div>`;
+      html += `<div class="winner-overlay">${lines}</div>`;
     }
 
     area.innerHTML = html;
@@ -493,6 +519,12 @@ class TexasHoldemUI extends BaseGameUI {
         </div>
       `;
     }).join('');
+  }
+
+  _isDealer(ps) {
+    if (!ps.seats) return false;
+    const mySeat = ps.seats[ps.mySeatIndex];
+    return mySeat && mySeat.isDealer;
   }
 
   _formatChips(n) {
