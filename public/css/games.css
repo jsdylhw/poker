@@ -339,7 +339,7 @@
   }
 }
 .card.dealing {
-  animation: dealCardIn 0.35s ease-out forwards;
+  animation: dealCardIn 0.35s ease-out both;
 }
 
 /* Run It Twice display */

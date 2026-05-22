@@ -15,7 +15,7 @@ function registerGameHandlers(io, socket, roomManager) {
       }
       const result = room.gameSession.start();
       if (result && result.error) return callback && callback({ error: result.error });
-      room.state = 'playing';
+      room.state = (room.gameSession.handOver || room.gameSession.state === 'ended') ? 'ended' : 'playing';
       _broadcastGameState(io, room);
       return callback && callback({ success: true });
     }

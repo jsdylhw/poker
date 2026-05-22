@@ -59,8 +59,13 @@ function playHand(game, strategy = 'call') {
     const actions = getActions(game, pid);
 
     // Handle showdown phase
-    if (actions.includes('show') && actions.includes('muck')) {
+    if (actions.includes('show')) {
       game.handleAction(pid, 'show', {});
+      steps++;
+      continue;
+    }
+    if (actions.includes('run-twice')) {
+      game.handleAction(pid, 'run-twice', {});
       steps++;
       continue;
     }
@@ -309,18 +314,61 @@ test('TexasHoldem - Run It Twice', async (t) => {
 
     playHand(game, 'allin');
     const endState = game.getEndState();
-    // Run It Twice may or may not trigger depending on when all-in happened
-    if (endState.results && endState.results.runItTwice) {
-      assert.equal(endState.results.runouts.length, 2);
-      // Verify no duplicate cards between the two runouts' NEW cards
-      const saved = game.communityCards;
-      const savedIds = new Set(saved.map(c => c.id));
-      const r1new = endState.results.runouts[0].communityCards.filter(c => !savedIds.has(c.id));
-      const r2new = endState.results.runouts[1].communityCards.filter(c => !savedIds.has(c.id));
-      const r1newIds = new Set(r1new.map(c => c.id));
-      const overlap = r2new.filter(c => r1newIds.has(c.id));
-      assert.equal(overlap.length, 0, 'New cards must not duplicate across runouts');
-    }
+    assert.equal(endState.results.runItTwice, true);
+    assert.equal(endState.results.runouts.length, 2);
+    // Verify no duplicate cards between the two runouts' NEW cards
+    const saved = game.communityCards;
+    const savedIds = new Set(saved.map(c => c.id));
+    const r1new = endState.results.runouts[0].communityCards.filter(c => !savedIds.has(c.id));
+    const r2new = endState.results.runouts[1].communityCards.filter(c => !savedIds.has(c.id));
+    const r1newIds = new Set(r1new.map(c => c.id));
+    const overlap = r2new.filter(c => r1newIds.has(c.id));
+    assert.equal(overlap.length, 0, 'New cards must not duplicate across runouts');
+  });
+
+  await t.test('asks all active all-in showdown players before running twice', () => {
+    const room = makeRoom({ runItTwice: true, defaultChips: 100 });
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    const dealerId = game.seats[game.dealerIndex].playerId;
+    assert.equal(game.handleAction(dealerId, 'all-in', {}).error, undefined);
+    const callerId = getCurrentPlayer(game);
+    assert.equal(game.handleAction(callerId, 'call', {}).error, undefined);
+
+    assert.equal(game.runItTwicePhase, true);
+    assert.equal(game.handOver, false);
+    assert.deepEqual(getActions(game, getCurrentPlayer(game)).sort(), ['run-once', 'run-twice']);
+
+    const firstChooser = getCurrentPlayer(game);
+    assert.equal(game.handleAction(firstChooser, 'run-twice', {}).error, undefined);
+    assert.equal(game.runItTwicePhase, true);
+    assert.equal(game.handOver, false);
+
+    const secondChooser = getCurrentPlayer(game);
+    assert.equal(game.handleAction(secondChooser, 'run-twice', {}).error, undefined);
+    assert.equal(game.handOver, true);
+    assert.equal(game.results.runItTwice, true);
+    assert.equal(game.results.runouts.length, 2);
+  });
+
+  await t.test('runs once if any active player chooses once', () => {
+    const room = makeRoom({ runItTwice: true, defaultChips: 100 });
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    const dealerId = game.seats[game.dealerIndex].playerId;
+    assert.equal(game.handleAction(dealerId, 'all-in', {}).error, undefined);
+    assert.equal(game.handleAction(getCurrentPlayer(game), 'call', {}).error, undefined);
+
+    assert.equal(game.handleAction(getCurrentPlayer(game), 'run-twice', {}).error, undefined);
+    assert.equal(game.handleAction(getCurrentPlayer(game), 'run-once', {}).error, undefined);
+
+    assert.equal(game.handOver, true);
+    assert.equal(game.results.runItTwice, undefined);
+    assert.equal(game.communityCards.length, 5);
   });
 
   await t.test('runItTwice false does not trigger', () => {
@@ -344,10 +392,37 @@ test('TexasHoldem - rebuy', async (t) => {
 
     // Force chips to 0 first (simulate all-in loss)
     game.seats[0].chips = 0;
+    game.handOver = true;
     const result = game.rebuy('p1', 500);
     assert.equal(result.error, undefined);
     assert.equal(game.seats[0].chips, 500);
     assert.equal(game.rebuyCooldown['p1'], 2);
+  });
+
+  await t.test('rejects rebuy before hand is over', () => {
+    const room = makeRoom({ rebuyEnabled: true, rebuyMin: 100, rebuyMax: 1000 });
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    game.seats[0].chips = 0;
+    const result = game.rebuy('p1', 500);
+    assert.ok(result.error);
+    assert.match(result.error, /本局结束后/);
+  });
+
+  await t.test('rejects rebuy for all-in winner with pending winnings', () => {
+    const room = makeRoom({ rebuyEnabled: true, rebuyMin: 100, rebuyMax: 1000 });
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    game.seats[0].chips = 0;
+    game.seats[0].wonAmount = 1000;
+    game.handOver = true;
+    const result = game.rebuy('p1', 500);
+    assert.ok(result.error);
+    assert.match(result.error, /只能在输光/);
   });
 
   await t.test('rejects rebuy when chips > 0', () => {
@@ -366,6 +441,8 @@ test('TexasHoldem - rebuy', async (t) => {
     const game = new TexasHoldem(room, mockIO());
     game.start();
 
+    game.seats[0].chips = 0;
+    game.handOver = true;
     const result = game.rebuy('p1', 50);
     assert.ok(result.error);
   });
@@ -376,6 +453,8 @@ test('TexasHoldem - rebuy', async (t) => {
     const game = new TexasHoldem(room, mockIO());
     game.start();
 
+    game.seats[0].chips = 0;
+    game.handOver = true;
     const result = game.rebuy('p1', 500);
     assert.ok(result.error);
   });
@@ -517,6 +596,62 @@ test('TexasHoldem - edge cases', async (t) => {
     assert.equal(totalAfterNextHandStarts, 1000);
   });
 
+  await t.test('heads-up dealer all-in call runs out to showdown without extra actions', () => {
+    const room = makeRoom({ defaultChips: 500, smallBlind: 10, bigBlind: 20 });
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    const dealerId = game.seats[game.dealerIndex].playerId;
+    assert.equal(getCurrentPlayer(game), dealerId);
+
+    const allInResult = game.handleAction(dealerId, 'all-in', {});
+    assert.equal(allInResult.error, undefined);
+    const callerId = getCurrentPlayer(game);
+    const callResult = game.handleAction(callerId, 'call', {});
+    assert.equal(callResult.error, undefined);
+
+    assert.equal(game.phase, 'showdown');
+    assert.equal(game.showdownPhase, false);
+    assert.equal(game.communityCards.length, 5);
+    const activeIds = game.seats
+      .filter(s => !s.folded && s.hand.length > 0)
+      .map(s => s.playerId);
+    for (const playerId of activeIds) {
+      assert.equal(game.showdownChoices[playerId], 'show');
+      assert.deepEqual(getActions(game, playerId), []);
+    }
+
+    assert.equal(game.handOver, true);
+  });
+
+  await t.test('all-in showdown rejects muck for active dealt players', () => {
+    const room = makeRoom({ defaultChips: 500, smallBlind: 10, bigBlind: 20 });
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2'), makePlayer('Carl', 'p3')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    const allInPlayer = getCurrentPlayer(game);
+    assert.equal(game.handleAction(allInPlayer, 'all-in', {}).error, undefined);
+
+    while (!game.showdownPhase && !game.handOver) {
+      const pid = getCurrentPlayer(game);
+      const actions = getActions(game, pid);
+      const action = actions.includes('call') ? 'call' : (actions.includes('check') ? 'check' : actions[0]);
+      assert.equal(game.handleAction(pid, action, {}).error, undefined);
+    }
+
+    const forcedPlayer = game.seats.find(s => !s.folded && s.hand.length > 0)?.playerId;
+    assert.ok(forcedPlayer);
+    game.showdownChoices[forcedPlayer] = null;
+    game.showdownOrder = [forcedPlayer];
+    game.showdownPhase = true;
+    game.handOver = false;
+
+    assert.deepEqual(getActions(game, forcedPlayer), ['show']);
+    assert.match(game.handleAction(forcedPlayer, 'muck', {}).error, /All-in/);
+  });
+
   await t.test('rebuy cooldown auto-folds for 2 hands', () => {
     const room = makeRoom({ rebuyEnabled: true, rebuyMin: 100, rebuyMax: 1000, defaultChips: 500 });
     room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2')];
@@ -525,6 +660,7 @@ test('TexasHoldem - edge cases', async (t) => {
 
     // Simulate all-in loss and rebuy
     game.seats[0].chips = 0;
+    game.handOver = true;
     game.rebuy('p1', 500);
     assert.equal(game.rebuyCooldown['p1'], 2);
 
@@ -556,13 +692,45 @@ test('TexasHoldem - edge cases', async (t) => {
     game.start();
 
     game.seats[0].chips = 0;
+    game.handOver = true;
     game.rebuy('p1', 500);
     game.state = 'ended';
     game.start();
 
     assert.equal(game.state, 'ended');
+    assert.equal(game.handOver, true);
+    assert.equal(game.currentPlayerIndex, -1);
     assert.equal(game.seats[0].folded, true);
     assert.equal(game.seats[0].hand.length, 0);
+  });
+
+  await t.test('0-chip unbought player is not dealt in and not in action queue', () => {
+    const room = makeRoom({ rebuyEnabled: true, rebuyMin: 100, rebuyMax: 1000, defaultChips: 500 });
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2'), makePlayer('Carl', 'p3')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    // Carl lost all chips and has not rebought yet
+    game.seats[2].chips = 0;
+    game.state = 'ended';
+    game.start();
+
+    // Game should proceed with Alice and Bob
+    assert.equal(game.state, 'playing');
+    // Carl: no cards, not folded, chips=0
+    assert.equal(game.seats[2].hand.length, 0, '0-chip player should not be dealt cards');
+    assert.equal(game.seats[2].folded, false, '0-chip player should not be auto-folded');
+    assert.equal(game.seats[2].chips, 0);
+    // Carl should NOT be in playersToAct
+    assert.equal(game.playersToAct.has(2), false, '0-chip player should not be in action queue');
+    // Carl should have no valid actions
+    const carlActions = game.getState('p3').validActions;
+    assert.equal(carlActions.length, 0, '0-chip player should have no valid actions');
+    // Alice and Bob can play normally
+    assert.equal(game.seats[0].hand.length, 2);
+    assert.equal(game.seats[1].hand.length, 2);
+    playHand(game);
+    assert.equal(game.handOver, true);
   });
 
   await t.test('no immediate auto-fold on disconnect', () => {

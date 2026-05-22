@@ -29,6 +29,9 @@ class TexasHoldem extends GameSession {
     this.showdownPhase = false;
     this.showdownChoices = {};
     this.showdownOrder = [];
+    this.runItTwicePhase = false;
+    this.runItTwiceChoices = {};
+    this.runItTwiceOrder = [];
     this.rebuyCooldown = {};   // playerId -> hands remaining to sit out
     this._turnTimerId = null;
     this._turnStartedAt = 0;
@@ -90,6 +93,9 @@ class TexasHoldem extends GameSession {
     this.showdownPhase = false;
     this.showdownChoices = {};
     this.showdownOrder = [];
+    this.runItTwicePhase = false;
+    this.runItTwiceChoices = {};
+    this.runItTwiceOrder = [];
     this.actionHistory = [];
 
     // Reset seats
@@ -101,7 +107,8 @@ class TexasHoldem extends GameSession {
       seat.totalBet = 0;
     });
 
-    // Auto-fold players on rebuy cooldown, decrement counter
+    // Decrement rebuy cooldowns — one "hand cycle" has passed.
+    // Auto-fold players still on cooldown (skip if chips=0, no rebuy yet).
     for (const [pid, cd] of Object.entries(this.rebuyCooldown)) {
       if (cd > 0) {
         const seat = this.seats.find(s => s.playerId === pid);
@@ -116,16 +123,13 @@ class TexasHoldem extends GameSession {
     const canPlay = this.seats.filter(s => !s.folded && s.chips > 0);
     if (canPlay.length < 2) {
       this.state = 'ended';
+      this.handOver = true;
+      this.currentPlayerIndex = -1;
+      this._stopTurnTimer();
       return;
     }
 
-    // Remove players with no chips
-    const activeBefore = this.seats.filter(s => s.chips > 0 && !s.folded);
-    if (activeBefore.length < 2) {
-      // Game over - someone wins
-      this.state = 'ended';
-      return;
-    }
+    this.state = 'playing';
 
     // Rotate dealer
     this.dealerIndex = this._nextActiveSeat(this.dealerIndex);
@@ -211,7 +215,7 @@ class TexasHoldem extends GameSession {
     for (let i = 1; i <= n; i++) {
       const idx = (fromIndex + i) % n;
       const seat = this.seats[idx];
-      if (!seat.folded && !seat.allIn) return idx;
+      if (!seat.folded && !seat.allIn && seat.chips > 0) return idx;
     }
     return -1;
   }
@@ -220,7 +224,7 @@ class TexasHoldem extends GameSession {
     this.playersToAct.clear();
     for (let i = 0; i < this.seats.length; i++) {
       const seat = this.seats[i];
-      if (!seat.folded && !seat.allIn) {
+      if (!seat.folded && !seat.allIn && seat.chips > 0) {
         this.playersToAct.add(i);
       }
     }
@@ -233,7 +237,7 @@ class TexasHoldem extends GameSession {
     if (this.playersToAct.size > 0) return false;
 
     // Check all active players have equal round bets or are all-in
-    const activeNotAllIn = this.seats.filter(s => !s.folded && !s.allIn);
+    const activeNotAllIn = this.seats.filter(s => !s.folded && !s.allIn && s.chips > 0);
     if (activeNotAllIn.length <= 1) return true;
 
     const firstBet = activeNotAllIn[0].roundBet;
@@ -249,7 +253,7 @@ class TexasHoldem extends GameSession {
     }
 
     // Check if hand is over (only one player left)
-    const activePlayers = this.seats.filter(s => !s.folded);
+    const activePlayers = this.seats.filter(s => !s.folded && s.hand.length > 0);
     if (activePlayers.length === 1) {
       this._awardPot([activePlayers[0]]);
       this.handOver = true;
@@ -259,13 +263,12 @@ class TexasHoldem extends GameSession {
     // Count players with chips remaining (not all-in)
     const canAct = this.seats.filter(s => !s.folded && !s.allIn && s.chips > 0);
 
-    // Check for Run It Twice: all remaining players are all-in
-    if (canAct.length === 0 && this.runItTwice && this.phase !== 'river' && this.phase !== 'showdown') {
-      const activePlayers = this.seats.filter(s => !s.folded);
+    // If 0 or 1 players can still act, betting is closed. Run out remaining
+    // community cards and move to showdown.
+    if (canAct.length <= 1 && this.phase !== 'river' && this.phase !== 'showdown') {
+      const activePlayers = this.seats.filter(s => !s.folded && s.hand.length > 0);
       if (activePlayers.length >= 2) {
-        this._runItTwiceShowdown(activePlayers);
-        this.handOver = true;
-        this._stopTurnTimer();
+        this._resolveClosedAllInBetting(activePlayers);
         return;
       }
     }
@@ -298,13 +301,8 @@ class TexasHoldem extends GameSession {
 
     if (canAct.length <= 1 && this.currentPlayerIndex === -1) {
       // All remaining players are all-in, run out community
-      if (this.runItTwice) {
-        const activePlayers = this.seats.filter(s => !s.folded);
-        this._runItTwiceShowdown(activePlayers);
-      } else {
-        this._runoutCommunity();
-        this._startShowdownDecisions();
-      }
+      const activePlayers = this.seats.filter(s => !s.folded && s.hand.length > 0);
+      this._resolveClosedAllInBetting(activePlayers);
       return;
     }
 
@@ -328,6 +326,54 @@ class TexasHoldem extends GameSession {
     return this.masterDeck ? this.masterDeck.deal(count) : [];
   }
 
+  _remainingCommunityCardsNeeded() {
+    if (this.phase === 'preflop') return 5;
+    if (this.phase === 'flop') return 2;
+    if (this.phase === 'turn') return 1;
+    return 0;
+  }
+
+  _resolveClosedAllInBetting(activePlayers) {
+    if (this.runItTwice && this._remainingCommunityCardsNeeded() > 0) {
+      this._startRunItTwiceDecisions(activePlayers);
+      return;
+    }
+
+    this._runoutCommunity();
+    this._startShowdownDecisions();
+  }
+
+  _startRunItTwiceDecisions(activePlayers) {
+    this.runItTwicePhase = true;
+    this.runItTwiceChoices = {};
+    this.runItTwiceOrder = activePlayers.map(s => s.playerId);
+    this.runItTwiceOrder.forEach(pid => {
+      this.runItTwiceChoices[pid] = null;
+    });
+
+    const first = this.runItTwiceOrder[0];
+    this.currentPlayerIndex = this._getSeatIndex(first);
+    this._startTurnTimer();
+  }
+
+  _finishRunItTwiceDecisions() {
+    this.runItTwicePhase = false;
+    const activePlayers = this._activeShowdownSeats();
+    const agreedTwice = activePlayers.length >= 2
+      && activePlayers.every(s => this.runItTwiceChoices[s.playerId] === 'twice');
+
+    if (agreedTwice) {
+      this._runItTwiceShowdown(activePlayers);
+      this.handOver = true;
+      this.currentPlayerIndex = -1;
+      this._stopTurnTimer();
+      return;
+    }
+
+    this._runoutCommunity();
+    this._startShowdownDecisions();
+  }
+
   handleAction(playerId, action, data) {
     if (this.state !== 'playing') return { error: '游戏未在进行中' };
     if (this.handOver) return { error: '本局已结束' };
@@ -338,9 +384,45 @@ class TexasHoldem extends GameSession {
 
     const seat = this.seats[seatIndex];
 
-    // Showdown phase: allow folded/all-in players to show/muck
+    if (this.runItTwicePhase) {
+      if (action !== 'run-once' && action !== 'run-twice') return { error: '请选择发一次或发两次' };
+      if (!this.runItTwiceOrder.includes(playerId) || this.runItTwiceChoices[playerId] !== null) {
+        return { error: '无需选择发牌次数' };
+      }
+
+      const player = this.room.getPlayer(playerId);
+      this.runItTwiceChoices[playerId] = action === 'run-twice' ? 'twice' : 'once';
+      this.actionHistory.push({ playerId, action, phase: 'run-it-twice' });
+
+      const nextUndecided = this.runItTwiceOrder.find(pid => this.runItTwiceChoices[pid] === null);
+      if (nextUndecided) {
+        this.currentPlayerIndex = this._getSeatIndex(nextUndecided);
+        this._startTurnTimer();
+      } else {
+        this._finishRunItTwiceDecisions();
+      }
+
+      return {
+        publicAction: {
+          action,
+          playerId,
+          playerName: player ? player.name : '',
+          seatIndex,
+          isRunItTwiceChoice: true,
+          handOver: this.handOver,
+        },
+      };
+    }
+
+    // Showdown phase: allow players in showdown order to show/muck.
     if (this.showdownPhase) {
       if (action !== 'show' && action !== 'muck') return { error: '请选择亮牌或不亮' };
+      if (!this.showdownOrder.includes(playerId) || this.showdownChoices[playerId] !== null) {
+        return { error: '无需摊牌操作' };
+      }
+      if (action === 'muck' && this._mustShowAtShowdown(playerId)) {
+        return { error: 'All-in 摊牌必须亮牌' };
+      }
       const player = this.room.getPlayer(playerId);
       this.showdownChoices[playerId] = action;
 
@@ -650,12 +732,7 @@ class TexasHoldem extends GameSession {
     const savedPhase = this.phase;
     const savedCommunity = [...this.communityCards];
 
-    // Determine how many more community cards are needed
-    let cardsNeeded;
-    if (this.phase === 'preflop') cardsNeeded = 5;
-    else if (this.phase === 'flop') cardsNeeded = 2;
-    else if (this.phase === 'turn') cardsNeeded = 1;
-    else cardsNeeded = 0;
+    const cardsNeeded = this._remainingCommunityCardsNeeded();
 
     // Create two runouts from the master deck (no card duplication)
     const runouts = [];
@@ -769,6 +846,8 @@ class TexasHoldem extends GameSession {
       hand: seat ? seat.hand : [],
       mySeatIndex: seatIdx,
       myChips: seat ? seat.chips : 0,
+      myEffectiveChips: seat ? seat.chips + (seat.wonAmount || 0) : 0,
+      myWonAmount: seat ? (seat.wonAmount || 0) : 0,
       myTotalBuyin: seat ? (seat.totalBuyin || this.defaultChips) : 0,
       myRoundBet: seat ? seat.roundBet : 0,
       myTotalBet: seat ? seat.totalBet : 0,
@@ -777,13 +856,18 @@ class TexasHoldem extends GameSession {
       showdownPhase: this.showdownPhase,
       showdownChoices: this.showdownPhase ? this.showdownChoices : null,
       showdownOrder: this.showdownPhase ? this.showdownOrder : null,
+      runItTwicePhase: this.runItTwicePhase,
+      runItTwiceChoices: this.runItTwicePhase ? this.runItTwiceChoices : null,
+      runItTwiceOrder: this.runItTwicePhase ? this.runItTwiceOrder : null,
       rebuyCooldown: this.rebuyCooldown[playerId] || 0,
       isShowdownWinner: this.showdownPhase && this.showdownChoices[playerId] === 'show'
         && this.results?.winners?.some(w => w.playerId === playerId),
       myHandRevealed: this.showdownPhase && this.showdownChoices[playerId] === 'show',
-      isMyTurn: this.showdownPhase
-        ? (this.showdownChoices[playerId] === null && !this.handOver)
-        : (this.currentPlayerIndex === seatIdx && !this.handOver),
+      isMyTurn: this.runItTwicePhase
+        ? (this.runItTwiceChoices[playerId] === null && !this.handOver)
+        : (this.showdownPhase
+          ? (this.showdownChoices[playerId] === null && !this.handOver)
+          : (this.currentPlayerIndex === seatIdx && !this.handOver)),
       validActions: this._getValidActions(seatIdx, playerId),
       communityCards: this.communityCards,
       pot: this._totalPot(),
@@ -822,13 +906,18 @@ class TexasHoldem extends GameSession {
       pot: this._totalPot(),
       sidePots: this.sidePots,
       currentPlayerIndex: this.currentPlayerIndex,
-      currentPlayerId: this.showdownPhase
-        ? this.showdownOrder.find(pid => this.showdownChoices[pid] === null) || null
-        : (this.currentPlayerIndex !== -1 ? this.seats[this.currentPlayerIndex]?.playerId : null),
+      currentPlayerId: this.runItTwicePhase
+        ? this.runItTwiceOrder.find(pid => this.runItTwiceChoices[pid] === null) || null
+        : (this.showdownPhase
+          ? this.showdownOrder.find(pid => this.showdownChoices[pid] === null) || null
+          : (this.currentPlayerIndex !== -1 ? this.seats[this.currentPlayerIndex]?.playerId : null)),
       handOver: this.handOver,
       showdownPhase: this.showdownPhase,
       showdownChoices: this.showdownPhase ? this.showdownChoices : null,
       showdownOrder: this.showdownPhase ? this.showdownOrder : null,
+      runItTwicePhase: this.runItTwicePhase,
+      runItTwiceChoices: this.runItTwicePhase ? this.runItTwiceChoices : null,
+      runItTwiceOrder: this.runItTwicePhase ? this.runItTwiceOrder : null,
       seats: this.seats.map((s, i) => ({
         playerId: s.playerId,
         playerName: this.room.getPlayer(s.playerId)?.name || '',
@@ -874,17 +963,24 @@ class TexasHoldem extends GameSession {
     if (seatIndex === -1) return [];
     if (this.handOver) return [];
 
+    if (this.runItTwicePhase) {
+      if (this.runItTwiceChoices[playerId] !== null) return [];
+      if (!this.runItTwiceOrder.includes(playerId)) return [];
+      return ['run-once', 'run-twice'];
+    }
+
     // Showdown phase
     if (this.showdownPhase) {
       if (this.showdownChoices[playerId] !== null) return []; // already decided (incl. winner)
       if (!this.showdownOrder.includes(playerId)) return [];
+      if (this._mustShowAtShowdown(playerId)) return ['show'];
       return ['show', 'muck']; // show = 亮牌, muck = 不亮
     }
 
     if (this.currentPlayerIndex !== seatIndex) return [];
 
     const seat = this.seats[seatIndex];
-    if (seat.folded || seat.allIn) return [];
+    if (seat.folded || seat.allIn || seat.chips === 0) return [];
 
     const maxBet = Math.max(...this.seats.map(s => s.roundBet));
     const toCall = maxBet - seat.roundBet;
@@ -914,6 +1010,7 @@ class TexasHoldem extends GameSession {
 
   rebuy(playerId, amount) {
     if (!this.settings.rebuyEnabled) return { error: '补筹码功能未开启' };
+    if (!this.handOver) return { error: '本局结束后才能补筹码' };
     if (typeof amount !== 'number' || amount < this.settings.rebuyMin || amount > this.settings.rebuyMax) {
       return { error: `补筹码范围: ${this.settings.rebuyMin} - ${this.settings.rebuyMax}` };
     }
@@ -923,7 +1020,7 @@ class TexasHoldem extends GameSession {
 
     const seat = this.seats[seatIdx];
     // Only allow rebuy when chips = 0 (lost an all-in)
-    if (seat.chips > 0) return { error: '只能在输光 all-in 后补筹码' };
+    if (seat.chips + (seat.wonAmount || 0) > 0) return { error: '只能在输光 all-in 后补筹码' };
     // Must not be on cooldown already
     if (this.rebuyCooldown[playerId] > 0) return { error: `还需等待 ${this.rebuyCooldown[playerId]} 局` };
 
@@ -942,8 +1039,13 @@ class TexasHoldem extends GameSession {
       if (this.handOver || this.state !== 'playing') return;
       const playerId = this.seats[this.currentPlayerIndex]?.playerId;
       if (playerId) {
-        const timeoutAction = this.showdownPhase ? 'muck' : 'fold';
-        console.log(`[超时] ${playerId} 自动${timeoutAction === 'muck' ? '不亮' : '弃牌'}`);
+        const timeoutAction = this.runItTwicePhase
+          ? 'run-once'
+          : (this.showdownPhase ? 'muck' : 'fold');
+        const timeoutLabel = timeoutAction === 'run-once'
+          ? '发一次'
+          : (timeoutAction === 'muck' ? '不亮' : '弃牌');
+        console.log(`[超时] ${playerId} 自动${timeoutLabel}`);
         this.handleAction(playerId, timeoutAction, {});
         // Broadcast state
         this.io.to(this.room.code).emit('game:turn', this.getPublicState());
@@ -971,12 +1073,25 @@ class TexasHoldem extends GameSession {
     return Math.max(0, Math.ceil(this.turnTime - elapsed));
   }
 
+  _activeShowdownSeats() {
+    return this.seats.filter(s => !s.folded && s.hand.length > 0);
+  }
+
+  _isAllInShowdown() {
+    return this._activeShowdownSeats().some(s => s.allIn);
+  }
+
+  _mustShowAtShowdown(playerId) {
+    if (!this.showdownPhase || !this._isAllInShowdown()) return false;
+    return this._activeShowdownSeats().some(s => s.playerId === playerId);
+  }
+
   _startShowdownDecisions(skipAutoShow = false) {
     this.phase = 'showdown';
     this.showdownPhase = true;
     this.showdownChoices = {};
 
-    const activePlayers = this.seats.filter(s => !s.folded);
+    const activePlayers = this._activeShowdownSeats();
 
     // Auto-evaluate if not already done (e.g. from fold-all path)
     if (!this.results) {
@@ -1010,10 +1125,14 @@ class TexasHoldem extends GameSession {
       };
     }
 
-    // Winner(s) auto-show (unless fold-all win where winner can choose)
+    // Winner(s) auto-show. If an all-in reaches showdown, all active dealt
+    // players must table their cards.
     const winnerIds = new Set(this.results.winners.map(w => w.playerId));
     if (!skipAutoShow) {
-      winnerIds.forEach(pid => {
+      const autoShowIds = this._isAllInShowdown()
+        ? activePlayers.map(s => s.playerId)
+        : Array.from(winnerIds);
+      autoShowIds.forEach(pid => {
         this.showdownChoices[pid] = 'show';
       });
     }
@@ -1027,12 +1146,14 @@ class TexasHoldem extends GameSession {
     activePlayers.forEach(s => {
       if (!winnerIds.has(s.playerId)) {
         this.showdownOrder.push(s.playerId);
-        this.showdownChoices[s.playerId] = null;
+        if (this.showdownChoices[s.playerId] !== 'show') {
+          this.showdownChoices[s.playerId] = null;
+        }
       }
     });
-    // Folded players can also show
+    // Folded players can also show (but only if they were dealt cards)
     this.seats.forEach(s => {
-      if (s.folded && !this.showdownOrder.includes(s.playerId)) {
+      if (s.folded && !this.showdownOrder.includes(s.playerId) && s.hand.length > 0) {
         this.showdownOrder.push(s.playerId);
         this.showdownChoices[s.playerId] = null;
       }

@@ -7,6 +7,7 @@ class TexasHoldemUI extends BaseGameUI {
       turn: 'Turn',
       river: 'River',
       showdown: 'Showdown',
+      'run-it-twice': 'Run It Twice',
     };
     this.privateState = null;
     this.publicState = null;
@@ -17,6 +18,11 @@ class TexasHoldemUI extends BaseGameUI {
     this._lastCommCount = 0;
     this._lastHandKey = '';
     this._lastCommKey = '';
+    this._communityAnimationDoneAt = 0;
+    this._resultRevealDoneAt = 0;
+    this._communityRenderTimer = null;
+    this._resultRenderTimer = null;
+    this._winSoundTimer = null;
   }
 
   render() {
@@ -54,6 +60,20 @@ class TexasHoldemUI extends BaseGameUI {
     if (state.communityCards && state.communityCards.length === 0 && this._lastCommCount > 0) {
       this._handDealt = false;
       this._lastCommCount = 0;
+      this._communityAnimationDoneAt = 0;
+      this._resultRevealDoneAt = 0;
+      if (this._communityRenderTimer) {
+        clearTimeout(this._communityRenderTimer);
+        this._communityRenderTimer = null;
+      }
+      if (this._resultRenderTimer) {
+        clearTimeout(this._resultRenderTimer);
+        this._resultRenderTimer = null;
+      }
+      if (this._winSoundTimer) {
+        clearTimeout(this._winSoundTimer);
+        this._winSoundTimer = null;
+      }
     }
     this.privateState = state;
     this._updateUI();
@@ -75,6 +95,11 @@ class TexasHoldemUI extends BaseGameUI {
       if (action.handOver) this._updateUI();
       return;
     }
+    if (action.isRunItTwiceChoice) {
+      this.showMessage(action.action === 'run-twice' ? `${name} 选择发两次` : `${name} 选择发一次`);
+      Sound.chip();
+      return;
+    }
     if (action.action === 'fold') {
       this.showMessage(`${name} 弃牌`); Sound.fold();
     } else if (action.action === 'check') {
@@ -94,8 +119,16 @@ class TexasHoldemUI extends BaseGameUI {
   }
 
   onGameEnd(result) {
-    Sound.win();
     this._updateUI();
+    if (this._isResultRevealPending()) {
+      if (this._winSoundTimer) clearTimeout(this._winSoundTimer);
+      this._winSoundTimer = setTimeout(() => {
+        this._winSoundTimer = null;
+        Sound.win();
+      }, Math.max(0, this._resultRevealDoneAt - Date.now()));
+    } else {
+      Sound.win();
+    }
   }
 
   _updateUI() {
@@ -107,11 +140,13 @@ class TexasHoldemUI extends BaseGameUI {
     // Phase label
     const phaseEl = document.getElementById('phase-label');
     if (phaseEl) {
-      phaseEl.textContent = this.phaseNames[pub.phase] || pub.phase;
+      phaseEl.textContent = pub.runItTwicePhase
+        ? this.phaseNames['run-it-twice']
+        : (this.phaseNames[pub.phase] || pub.phase);
     }
 
     // Community cards
-    this._renderCommunityCards(ps.communityCards);
+    this._renderCommunityCards(ps.communityCards, ps);
 
     // Pot
     const potEl = document.getElementById('pot-display');
@@ -136,7 +171,33 @@ class TexasHoldemUI extends BaseGameUI {
     this._renderWinner(ps, pub);
   }
 
-  _renderCommunityCards(cards) {
+  _scheduleResultRender(when) {
+    if (this._resultRenderTimer) clearTimeout(this._resultRenderTimer);
+    const delay = Math.max(0, when - Date.now());
+    this._resultRenderTimer = setTimeout(() => {
+      this._resultRenderTimer = null;
+      this._updateUI();
+    }, delay);
+  }
+
+  _scheduleCommunityReveal(when) {
+    if (this._communityRenderTimer) clearTimeout(this._communityRenderTimer);
+    const delay = Math.max(0, when - Date.now());
+    this._communityRenderTimer = setTimeout(() => {
+      this._communityRenderTimer = null;
+      this._updateUI();
+    }, delay);
+  }
+
+  _isCommunityAnimationPending() {
+    return Date.now() < this._communityAnimationDoneAt;
+  }
+
+  _isResultRevealPending() {
+    return Date.now() < this._resultRevealDoneAt;
+  }
+
+  _renderCommunityCards(cards, ps) {
     const container = document.getElementById('community-cards');
     if (!container) return;
 
@@ -149,6 +210,15 @@ class TexasHoldemUI extends BaseGameUI {
 
     if (count === 0 && this._lastCommCount > 0) this._lastCommCount = 0;
     const currentPrev = this._lastCommCount;
+    const isAllInRunout = !!ps.handOver && count > currentPrev;
+    const dealDelay = isAllInRunout ? 1000 : 250;
+    if (isAllInRunout) {
+      const animationDoneAt = Date.now() + ((count - currentPrev - 1) * dealDelay) + 500;
+      this._communityAnimationDoneAt = Math.max(this._communityAnimationDoneAt, animationDoneAt);
+      this._resultRevealDoneAt = Math.max(this._resultRevealDoneAt, animationDoneAt + 2300);
+      this._scheduleCommunityReveal(this._communityAnimationDoneAt);
+      this._scheduleResultRender(this._resultRevealDoneAt);
+    }
 
     // Step 1: always render 5 placeholder divs
     container.innerHTML = '';
@@ -163,7 +233,7 @@ class TexasHoldemUI extends BaseGameUI {
       if (i < currentPrev) {
         container.replaceChild(CardRenderer.createCard(cards[i]), container.children[i]);
       } else {
-        const delay = (i - currentPrev) * 250;
+        const delay = (i - currentPrev) * dealDelay;
         const card = cards[i];
         setTimeout(() => {
           if (i < container.children.length) {
@@ -185,6 +255,8 @@ class TexasHoldemUI extends BaseGameUI {
 
     const myIdx = ps.mySeatIndex;
     const seats = ps.seats || pub.seats || [];
+    const communityAnimationPending = this._isCommunityAnimationPending();
+    const resultRevealPending = this._isResultRevealPending();
 
     const sdChoices = ps.showdownChoices || pub.showdownChoices || {};
     const sdWinners = ps.showdownPhase && ps.results?.winners ? new Set(ps.results.winners.map(w => w.playerId)) : new Set();
@@ -197,7 +269,8 @@ class TexasHoldemUI extends BaseGameUI {
       const isBB = s.isBigBlind;
       const isSdWinner = sdWinners.has(s.playerId);
       const choseShow = sdChoices[s.playerId] === 'show';
-      const revealHand = (pub.handOver && !s.folded) || isMe || isSdWinner || choseShow;
+      const revealHand = isMe || (!communityAnimationPending && ((pub.handOver && !s.folded) || isSdWinner || choseShow));
+      const animateReveal = revealHand && !isMe && (pub.handOver || choseShow);
 
       let cls = 'player-row';
       if (isMe) cls += ' is-me';
@@ -214,7 +287,14 @@ class TexasHoldemUI extends BaseGameUI {
         const handCards = isMe ? (ps.hand || []) : (s.hand || []);
         if (handCards.length > 0) {
           cardsHtml = '<div class="player-cards">' +
-            handCards.map(c => CardRenderer.createCard(c, { small: true }).outerHTML).join('') +
+            handCards.map((c, idx) => {
+              const el = CardRenderer.createCard(c, { small: true });
+              if (animateReveal) {
+                el.classList.add('dealing');
+                el.style.animationDelay = `${idx * 1000}ms`;
+              }
+              return el.outerHTML;
+            }).join('') +
             '</div>';
         }
       } else if (!isMe && s.cardCount > 0) {
@@ -225,7 +305,7 @@ class TexasHoldemUI extends BaseGameUI {
 
       const betStr = s.roundBet > 0 ? ` 下注 ${s.roundBet}` : '';
       const handNet = (s.wonAmount || 0) - (s.totalBet || 0);
-      const netStr = pub.handOver && handNet !== 0 ? `${handNet > 0 ? '+' : ''}${handNet}` : '';
+      const netStr = pub.handOver && !resultRevealPending && handNet !== 0 ? `${handNet > 0 ? '+' : ''}${handNet}` : '';
       const netClass = handNet >= 0 ? 'player-won' : 'player-lost';
 
       return `
@@ -237,9 +317,9 @@ class TexasHoldemUI extends BaseGameUI {
             ${betStr ? `<span class="player-bet">${betStr}</span>` : ''}
             ${s.allIn ? '<span class="player-allin">ALL IN</span>' : ''}
           ${s.rebuyCooldown > 0 ? `<span class="player-cooldown">冷板凳 ${s.rebuyCooldown}局</span>` : ''}
-            ${isSdWinner ? '<span class="player-winner">赢家</span>' : ''}
+            ${isSdWinner && !resultRevealPending ? '<span class="player-winner">赢家</span>' : ''}
             ${netStr ? `<span class="${netClass}">${netStr}</span>` : ''}
-            ${sdChoices[s.playerId] ? `<span class="player-sd-choice">${sdChoices[s.playerId]==='show'?'亮牌':'不亮'}</span>` : ''}
+            ${sdChoices[s.playerId] && !resultRevealPending ? `<span class="player-sd-choice">${sdChoices[s.playerId]==='show'?'亮牌':'不亮'}</span>` : ''}
           </div>
           ${cardsHtml}
         </div>
@@ -279,12 +359,35 @@ class TexasHoldemUI extends BaseGameUI {
 
     const settings = ps.settings || {};
 
+    if (ps.runItTwicePhase && ps.isMyTurn) {
+      bar.innerHTML = `
+        <button class="btn-success action-btn" data-action="run-twice">发两次</button>
+        <button class="btn-secondary action-btn" data-action="run-once">发一次</button>
+      `;
+      bar.querySelectorAll('.action-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          SocketClient.emit('game:action', { action: btn.dataset.action });
+        });
+      });
+      return;
+    }
+
+    if (ps.runItTwicePhase) {
+      bar.innerHTML = '<span style="color:rgba(255,255,255,0.5);font-size:13px">等待选择发牌次数...</span>';
+      return;
+    }
+
     // Showdown phase: show/muck buttons
     if (ps.showdownPhase && ps.isMyTurn) {
-      bar.innerHTML = `
-        <button class="btn-success action-btn" data-action="show">亮牌</button>
-        <button class="btn-danger action-btn" data-action="muck">不亮</button>
-      `;
+      const actions = ps.validActions || [];
+      bar.innerHTML = [
+        actions.includes('show')
+          ? '<button class="btn-success action-btn" data-action="show">亮牌</button>'
+          : '',
+        actions.includes('muck')
+          ? '<button class="btn-danger action-btn" data-action="muck">不亮</button>'
+          : '',
+      ].join('');
       bar.querySelectorAll('.action-btn').forEach(btn => {
         btn.addEventListener('click', () => {
           SocketClient.emit('game:action', { action: btn.dataset.action });
@@ -307,8 +410,9 @@ class TexasHoldemUI extends BaseGameUI {
 
     if (!ps.isMyTurn || ps.handOver) {
       let html = '';
-      // Rebuy only when chips=0, not folded, not on cooldown
-      if (!ps.handOver && settings.rebuyEnabled !== false && ps.myChips === 0 && !ps.myFolded && !ps.rebuyCooldown) {
+      const effectiveChips = ps.myEffectiveChips ?? ps.myChips;
+      // Only allow rebuy after hand settlement (handOver)
+      if (ps.handOver && settings.rebuyEnabled !== false && effectiveChips === 0 && !ps.myFolded && !ps.rebuyCooldown) {
         html += this._rebuyHtml(settings);
       }
       let waitMsg = '等待其他玩家操作...';
@@ -355,11 +459,6 @@ class TexasHoldemUI extends BaseGameUI {
     }
     if (actions.includes('all-in')) {
       html += `<button class="btn-gold action-btn" data-action="all-in">All-in ${ps.myChips + (ps.myRoundBet || 0)}</button>`;
-    }
-
-    // Rebuy only when chips = 0 (lost all-in) and not on cooldown
-    if (settings.rebuyEnabled !== false && ps.myChips === 0 && !ps.myFolded && !ps.rebuyCooldown) {
-      html += this._rebuyHtml(settings);
     }
 
     bar.innerHTML = html;
@@ -452,7 +551,7 @@ class TexasHoldemUI extends BaseGameUI {
     const area = document.getElementById('winner-area');
     if (!area) return;
 
-    if (!pub.handOver || !ps.results) {
+    if (!pub.handOver || !ps.results || this._isResultRevealPending()) {
       area.innerHTML = '';
       return;
     }
