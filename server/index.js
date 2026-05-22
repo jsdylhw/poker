@@ -19,8 +19,9 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-// Room manager
+// Room manager - restore rooms from DB on startup
 const roomManager = new RoomManager();
+roomManager.loadFromDB();
 
 // Register handlers
 registerAllHandlers(io, roomManager);

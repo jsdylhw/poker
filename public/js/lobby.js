@@ -16,11 +16,11 @@ const Lobby = (() => {
     document.getElementById('btn-create-room').addEventListener('click', async () => {
       const name = getPlayerName();
       if (!name) return;
-      const res = await SocketClient.emit('room:create', { gameType: selectedGame, playerName: name });
+      if (!await ensureAuth(name)) return;
+      const res = await SocketClient.emit('room:create', { gameType: selectedGame });
       if (res.error) return;
       AppState.set('player', res.player);
       AppState.set('room', res.room);
-      localStorage.setItem('playerId', res.player.id);
       Router.navigate('room-lobby');
     });
 
@@ -30,11 +30,11 @@ const Lobby = (() => {
       if (!name) return;
       const code = document.getElementById('room-code').value.trim();
       if (!code) return Toast.show('请输入房间号', 'error');
-      const res = await SocketClient.emit('room:join', { code: code.toUpperCase(), playerName: name });
+      if (!await ensureAuth(name)) return;
+      const res = await SocketClient.emit('room:join', { code: code.toUpperCase() });
       if (res.error) return;
       AppState.set('player', res.player);
       AppState.set('room', res.room);
-      localStorage.setItem('playerId', res.player.id);
       Router.navigate('room-lobby');
     });
 
@@ -43,10 +43,10 @@ const Lobby = (() => {
       if (e.key === 'Enter') document.getElementById('btn-join-room').click();
     });
 
-    // Restore player name
-    const savedName = localStorage.getItem('playerName');
-    if (savedName) {
-      document.getElementById('player-name').value = savedName;
+    // Restore player name from socket identity
+    const storedName = localStorage.getItem('displayName');
+    if (storedName) {
+      document.getElementById('player-name').value = storedName;
     }
 
     // Listen for room updates while in lobby
@@ -61,12 +61,15 @@ const Lobby = (() => {
 
   function getPlayerName() {
     const name = document.getElementById('player-name').value.trim();
-    if (!name) {
-      Toast.show('请输入昵称', 'error');
-      return '';
-    }
-    localStorage.setItem('playerName', name);
+    if (!name) { Toast.show('请输入昵称', 'error'); return ''; }
     return name;
+  }
+
+  async function ensureAuth(name) {
+    if (SocketClient.getUserId()) return true;
+    const ok = await SocketClient.register(name);
+    if (!ok) { Toast.show('注册失败，请重试', 'error'); return false; }
+    return true;
   }
 
   async function refreshRoomList() {
@@ -91,13 +94,13 @@ const Lobby = (() => {
       btn.addEventListener('click', async () => {
         const name = getPlayerName();
         if (!name) return;
+        if (!await ensureAuth(name)) return;
         const code = btn.dataset.code;
         document.getElementById('room-code').value = code;
-        const res = await SocketClient.emit('room:join', { code, playerName: name });
+        const res = await SocketClient.emit('room:join', { code });
         if (res.error) return;
         AppState.set('player', res.player);
         AppState.set('room', res.room);
-        localStorage.setItem('playerId', res.player.id);
         Router.navigate('room-lobby');
       });
     });
@@ -112,7 +115,7 @@ const Lobby = (() => {
     document.getElementById('room-code-display').textContent = room.code;
     document.getElementById('game-type-display').textContent = gameNames[room.gameType] || room.gameType;
 
-    const isHost = player && player.id === room.hostId;
+    const isHost = room.isHost === true;
     document.getElementById('btn-start-game').classList.toggle('hidden', !isHost);
     document.getElementById('btn-ready').classList.toggle('hidden', isHost);
 

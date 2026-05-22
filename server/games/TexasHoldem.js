@@ -944,17 +944,13 @@ class TexasHoldem extends GameSession {
       if (playerId) {
         console.log(`[超时] ${playerId} 自动弃牌`);
         this.handleAction(playerId, 'fold', {});
-        // Broadcast timeout
-        const publicState = this.getPublicState();
-        const endState = this.handOver ? this.getEndState() : null;
-        this.io.to(this.room.code).emit('game:turn', publicState);
+        // Broadcast state
+        this.io.to(this.room.code).emit('game:turn', this.getPublicState());
         for (const p of this.room.players) {
-          this.io.to(p.socketId).emit('game:dealt', this.getState(p.id));
+          if (p.socketId) this.io.to(p.socketId).emit('game:dealt', this.getState(p.id));
         }
-        if (endState) {
-          this.io.to(this.room.code).emit('game:ended', endState);
-          this.room.state = 'ended';
-        }
+        // Use shared end-of-hand logic (saves HandRecords, etc)
+        try { require('../handlers/finishHand')(this.io, this.room); } catch (e) {}
       }
     }, duration);
     // Allow process to exit in test environments (HTTP server keeps it alive otherwise)

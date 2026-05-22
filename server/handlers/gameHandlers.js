@@ -42,6 +42,9 @@ function registerGameHandlers(io, socket, roomManager) {
       return callback && callback({ error: result.error });
     }
 
+    // Only mark DB playing after successful start
+    try { require('../db').get().prepare(`UPDATE rooms SET state = 'playing' WHERE roomCode = ?`).run(room.code); } catch (e) {}
+
     _broadcastGameState(io, room);
     if (callback) callback({ success: true });
   });
@@ -66,12 +69,8 @@ function registerGameHandlers(io, socket, roomManager) {
     _broadcastGameState(io, room);
 
     // Check if game ended
-    if (room.gameSession.handOver || room.gameSession.state === 'ended') {
-      const endState = room.gameSession.getEndState();
-      io.to(room.code).emit('game:ended', endState);
-      room.state = 'ended';
-      // Keep gameSession alive for next hand
-    }
+    require('./finishHand')(io, room);
+
 
     if (callback) callback({ success: true });
   });
@@ -94,7 +93,7 @@ function _broadcastGameState(io, room) {
   io.to(room.code).emit('game:turn', room.gameSession.getPublicState());
   for (const player of room.players) {
     const state = room.gameSession.getState(player.id);
-    io.to(player.socketId).emit('game:dealt', state);
+    if (player.socketId) io.to(player.socketId).emit('game:dealt', state);
   }
 }
 

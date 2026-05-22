@@ -1,8 +1,9 @@
 const { v4: uuidv4 } = require('uuid');
 
 class Player {
-  constructor(name, socketId) {
+  constructor(name, socketId, userId = null) {
     this.id = uuidv4();
+    this.userId = userId || this.id;
     this.name = name;
     this.socketId = socketId;
     this.seatIndex = -1;
@@ -14,6 +15,7 @@ class Player {
   toJSON() {
     return {
       id: this.id,
+      userId: this.userId,
       name: this.name,
       seatIndex: this.seatIndex,
       isReady: this.isReady,

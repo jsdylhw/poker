@@ -110,10 +110,10 @@ class Room {
   canStart() {
     if (this.players.length < this.minPlayers) return false;
     if (this.players.length > this.maxPlayers) return false;
-    return this.players.every(p => p.isReady);
+    return this.players.every(p => p.isReady && p.isOnline);
   }
 
-  toJSON() {
+  toJSON(viewerPlayerId) {
     return {
       code: this.code,
       gameType: this.gameType,
@@ -123,6 +123,10 @@ class Room {
       settings: this.settings,
       playerCount: this.players.length,
       maxPlayers: this.maxPlayers,
+      ...(viewerPlayerId ? {
+        myPlayerId: viewerPlayerId,
+        isHost: viewerPlayerId === this.hostId,
+      } : {}),
     };
   }
 }
