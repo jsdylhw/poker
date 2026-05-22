@@ -234,6 +234,7 @@ class TexasHoldemUI extends BaseGameUI {
             ${roleTags.join('')}
             ${betStr ? `<span class="player-bet">${betStr}</span>` : ''}
             ${s.allIn ? '<span class="player-allin">ALL IN</span>' : ''}
+          ${s.rebuyCooldown > 0 ? `<span class="player-cooldown">冷板凳 ${s.rebuyCooldown}局</span>` : ''}
             ${isSdWinner ? '<span class="player-winner">赢家</span>' : ''}
             ${wonStr ? `<span class="player-won">${wonStr}</span>` : ''}
             ${sdChoices[s.playerId] ? `<span class="player-sd-choice">${sdChoices[s.playerId]==='show'?'亮牌':'不亮'}</span>` : ''}
@@ -304,13 +305,15 @@ class TexasHoldemUI extends BaseGameUI {
 
     if (!ps.isMyTurn || ps.handOver) {
       let html = '';
-      // Rebuy button area
-      if (!ps.handOver && settings.rebuyEnabled !== false) {
+      // Rebuy only when chips=0, not folded, not on cooldown
+      if (!ps.handOver && settings.rebuyEnabled !== false && ps.myChips === 0 && !ps.myFolded && !ps.rebuyCooldown) {
         html += this._rebuyHtml(settings);
       }
+      let waitMsg = '等待其他玩家操作...';
+      if (ps.rebuyCooldown > 0) waitMsg = `坐冷板凳 - 还需等待 ${ps.rebuyCooldown} 局`;
       html += ps.handOver
         ? (this._isDealer(ps) ? '<button class="btn-gold" id="btn-next-hand">开始下一局</button>' : '<span style="color:rgba(255,255,255,0.5);font-size:13px">等待庄家开始下一局...</span>')
-        : '<span style="color:rgba(255,255,255,0.5);font-size:13px">等待其他玩家操作...</span>';
+        : `<span style="color:rgba(255,255,255,0.5);font-size:13px">${waitMsg}</span>`;
       bar.innerHTML = html;
       this._bindNextHandBtn();
       this._bindRebuy();
@@ -352,8 +355,8 @@ class TexasHoldemUI extends BaseGameUI {
       html += `<button class="btn-gold action-btn" data-action="all-in">All-in ${ps.myChips + (ps.myRoundBet || 0)}</button>`;
     }
 
-    // Rebuy when low on chips
-    if (settings.rebuyEnabled !== false) {
+    // Rebuy only when chips = 0 (lost all-in) and not on cooldown
+    if (settings.rebuyEnabled !== false && ps.myChips === 0 && !ps.myFolded && !ps.rebuyCooldown) {
       html += this._rebuyHtml(settings);
     }
 

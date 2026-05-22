@@ -8,6 +8,7 @@ class TexasHoldem extends GameSession {
     this.phase = 'preflop';
     this.seats = [];
     this.communityCards = [];
+    this.masterDeck = null;    // single deck per hand, prevents card duplication
     this.pot = 0;
     this.sidePots = [];
     this.dealerIndex = 0;
@@ -26,6 +27,7 @@ class TexasHoldem extends GameSession {
     this.showdownPhase = false;
     this.showdownChoices = {};
     this.showdownOrder = [];
+    this.rebuyCooldown = {};   // playerId -> hands remaining to sit out
     this._turnTimerId = null;
     this._turnStartedAt = 0;
   }
@@ -39,7 +41,7 @@ class TexasHoldem extends GameSession {
     if (this.state === 'ended' || this.handOver) {
       this._collectWinnings();
       this._startNewHand();
-      this.state = 'playing';
+      if (this.state !== 'ended') this.state = 'playing';
       return { success: true };
     }
 
@@ -76,6 +78,7 @@ class TexasHoldem extends GameSession {
   _startNewHand() {
     // Reset for new hand
     this.communityCards = [];
+    this.masterDeck = null;
     this.pot = 0;
     this.sidePots = [];
     this.handOver = false;
@@ -94,8 +97,26 @@ class TexasHoldem extends GameSession {
       seat.totalBet = 0;
     });
 
+    // Auto-fold players on rebuy cooldown, decrement counter
+    for (const [pid, cd] of Object.entries(this.rebuyCooldown)) {
+      if (cd > 0) {
+        const seat = this.seats.find(s => s.playerId === pid);
+        if (seat && seat.chips > 0) {
+          seat.folded = true;
+        }
+        this.rebuyCooldown[pid] = cd - 1;
+      }
+    }
+
+    // If < 2 non-folded players with chips remain, skip this hand
+    const canPlay = this.seats.filter(s => !s.folded && s.chips > 0);
+    if (canPlay.length < 2) {
+      this.state = 'ended';
+      return;
+    }
+
     // Remove players with no chips
-    const activeBefore = this.seats.filter(s => s.chips > 0);
+    const activeBefore = this.seats.filter(s => s.chips > 0 && !s.folded);
     if (activeBefore.length < 2) {
       // Game over - someone wins
       this.state = 'ended';
@@ -107,12 +128,13 @@ class TexasHoldem extends GameSession {
 
     // Post blinds
     this.phase = 'preflop';
-    const deck = Deck.createStandard52().shuffle();
+    // Single master deck for entire hand - no card duplication
+    this.masterDeck = Deck.createStandard52().shuffle();
 
     // Deal 2 cards to each active player
     for (const seat of this.seats) {
-      if (seat.chips > 0) {
-        seat.hand = deck.deal(2);
+      if (seat.chips > 0 && !seat.folded) {
+        seat.hand = this.masterDeck.deal(2);
       }
     }
 
@@ -282,21 +304,19 @@ class TexasHoldem extends GameSession {
   }
 
   _runoutCommunity() {
-    // Deal remaining community cards when everyone is all-in
-    const deck = Deck.createStandard52().shuffle(); // new deck just for community
+    // Deal remaining community cards from master deck
     if (this.phase === 'preflop') {
-      this.communityCards = deck.deal(5);
+      this.communityCards = this._dealCommunity(5);
     } else if (this.phase === 'flop') {
-      this.communityCards.push(...deck.deal(2));
+      this.communityCards.push(...this._dealCommunity(2));
     } else if (this.phase === 'turn') {
-      this.communityCards.push(...deck.deal(1));
+      this.communityCards.push(...this._dealCommunity(1));
     }
   }
 
   _dealCommunity(count) {
-    // Use fresh cards - in a real game we'd track the deck, but for simplicity
-    const deck = Deck.createStandard52().shuffle();
-    return deck.deal(count);
+    // Deal from the master deck - no card duplication
+    return this.masterDeck ? this.masterDeck.deal(count) : [];
   }
 
   handleAction(playerId, action, data) {
@@ -630,11 +650,10 @@ class TexasHoldem extends GameSession {
     else if (this.phase === 'turn') cardsNeeded = 1;
     else cardsNeeded = 0;
 
-    // Create two runouts from a single deck (no card duplication)
-    const masterDeck = Deck.createStandard52().shuffle();
+    // Create two runouts from the master deck (no card duplication)
     const runouts = [];
     for (let r = 0; r < 2; r++) {
-      const extraCards = masterDeck.deal(cardsNeeded);
+      const extraCards = this._dealCommunity(cardsNeeded);
       const fullCommunity = [...savedCommunity, ...extraCards];
 
       const evaluations = [];
@@ -726,6 +745,7 @@ class TexasHoldem extends GameSession {
         wonAmount: s.wonAmount || 0,
         folded: s.folded,
         allIn: s.allIn,
+        rebuyCooldown: this.rebuyCooldown[s.playerId] || 0,
         isOnline: this.room.getPlayer(s.playerId)?.isOnline !== false,
       };
     });
@@ -750,6 +770,7 @@ class TexasHoldem extends GameSession {
       showdownPhase: this.showdownPhase,
       showdownChoices: this.showdownPhase ? this.showdownChoices : null,
       showdownOrder: this.showdownPhase ? this.showdownOrder : null,
+      rebuyCooldown: this.rebuyCooldown[playerId] || 0,
       isShowdownWinner: this.showdownPhase && this.showdownChoices[playerId] === 'show'
         && this.results?.winners?.some(w => w.playerId === playerId),
       myHandRevealed: this.showdownPhase && this.showdownChoices[playerId] === 'show',
@@ -772,6 +793,7 @@ class TexasHoldem extends GameSession {
         totalBet: s.totalBet,
         wonAmount: s.wonAmount,
         hand: (this.handOver && !s.folded) ? s.hand : [],
+        rebuyCooldown: this.rebuyCooldown[s.playerId] || 0,
         isDealer: i === this.dealerIndex,
         isSmallBlind: this._isSmallBlind(i),
         isBigBlind: this._isBigBlind(i),
@@ -810,6 +832,7 @@ class TexasHoldem extends GameSession {
         totalBet: s.totalBet,
         wonAmount: s.wonAmount,
         cardCount: s.hand.length,
+        rebuyCooldown: this.rebuyCooldown[s.playerId] || 0,
         isDealer: i === this.dealerIndex,
         isSmallBlind: this._isSmallBlind(i),
         isBigBlind: this._isBigBlind(i),
@@ -893,9 +916,16 @@ class TexasHoldem extends GameSession {
     if (seatIdx === -1) return { error: '玩家不在座位上' };
 
     const seat = this.seats[seatIdx];
+    // Only allow rebuy when chips = 0 (lost an all-in)
+    if (seat.chips > 0) return { error: '只能在输光 all-in 后补筹码' };
+    // Must not be on cooldown already
+    if (this.rebuyCooldown[playerId] > 0) return { error: `还需等待 ${this.rebuyCooldown[playerId]} 局` };
+
     seat.chips += amount;
     seat.totalBuyin = (seat.totalBuyin || this.defaultChips) + amount;
-    return { success: true, newChips: seat.chips };
+    // Sit out 2 hands after rebuy
+    this.rebuyCooldown[playerId] = 2;
+    return { success: true, newChips: seat.chips, cooldown: 2 };
   }
 
   _startTurnTimer() {

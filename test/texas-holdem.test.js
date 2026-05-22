@@ -45,6 +45,11 @@ function getCurrentPlayer(game) {
   return game.getPublicState().currentPlayerId;
 }
 
+function assertUniqueCards(cards) {
+  const ids = cards.map(c => c.id);
+  assert.equal(new Set(ids).size, ids.length, 'cards should not contain duplicates');
+}
+
 // Helper: play hand with simple strategy
 function playHand(game, strategy = 'call') {
   let steps = 0;
@@ -149,6 +154,22 @@ test('TexasHoldem - betting rounds', async (t) => {
     }
     assert.equal(game.phase, 'flop');
     assert.equal(game.communityCards.length, 3);
+  });
+
+  await t.test('uses one deck for hole cards and community cards', () => {
+    const room = makeRoom();
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2'), makePlayer('Carl', 'p3')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    playHand(game);
+
+    const visibleCards = [
+      ...game.communityCards,
+      ...game.seats.flatMap(seat => seat.hand),
+    ];
+    assert.equal(game.communityCards.length, 5);
+    assertUniqueCards(visibleCards);
   });
 });
 
@@ -276,16 +297,28 @@ test('TexasHoldem - Run It Twice', async (t) => {
 });
 
 test('TexasHoldem - rebuy', async (t) => {
-  await t.test('adds chips within allowed range', () => {
+  await t.test('adds chips within allowed range (only when chips=0)', () => {
     const room = makeRoom({ rebuyEnabled: true, rebuyMin: 100, rebuyMax: 1000 });
     room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2')];
     const game = new TexasHoldem(room, mockIO());
     game.start();
 
-    const oldChips = game.seats[0].chips;
+    // Force chips to 0 first (simulate all-in loss)
+    game.seats[0].chips = 0;
     const result = game.rebuy('p1', 500);
     assert.equal(result.error, undefined);
-    assert.equal(game.seats[0].chips, oldChips + 500);
+    assert.equal(game.seats[0].chips, 500);
+    assert.equal(game.rebuyCooldown['p1'], 2);
+  });
+
+  await t.test('rejects rebuy when chips > 0', () => {
+    const room = makeRoom({ rebuyEnabled: true, rebuyMin: 100, rebuyMax: 1000 });
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    const result = game.rebuy('p1', 500);
+    assert.ok(result.error);
   });
 
   await t.test('rejects rebuy below minimum', () => {
@@ -413,6 +446,54 @@ test('TexasHoldem - edge cases', async (t) => {
     // Winner auto-awarded, now in showdown - process all show/muck
     playHand(game);
     assert.equal(game.handOver, true);
+  });
+
+  await t.test('rebuy cooldown auto-folds for 2 hands', () => {
+    const room = makeRoom({ rebuyEnabled: true, rebuyMin: 100, rebuyMax: 1000, defaultChips: 500 });
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    // Simulate all-in loss and rebuy
+    game.seats[0].chips = 0;
+    game.rebuy('p1', 500);
+    assert.equal(game.rebuyCooldown['p1'], 2);
+
+    // Hand 1 - p1 auto-folded, cooldown 2→1
+    playHand(game);
+    game.state = 'ended';
+    game.start();
+    assert.equal(game.rebuyCooldown['p1'], 1);
+    assert.equal(game.seats[0].folded, true, 'Hand 1: should be auto-folded');
+
+    // Hand 2 - p1 auto-folded, cooldown 1→0
+    playHand(game);
+    game.state = 'ended';
+    game.start();
+    assert.equal(game.rebuyCooldown['p1'], 0);
+
+    // Hand 3 - cooldown over, p1 plays normally
+    playHand(game);
+    game.state = 'ended';
+    game.start();
+    assert.equal(game.rebuyCooldown['p1'], 0);
+    assert.equal(game.seats[0].folded, false, 'Hand 3: cooldown over, should NOT be folded');
+  });
+
+  await t.test('cooldown player is not dealt into a skipped two-player hand', () => {
+    const room = makeRoom({ rebuyEnabled: true, rebuyMin: 100, rebuyMax: 1000, defaultChips: 500 });
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    game.seats[0].chips = 0;
+    game.rebuy('p1', 500);
+    game.state = 'ended';
+    game.start();
+
+    assert.equal(game.state, 'ended');
+    assert.equal(game.seats[0].folded, true);
+    assert.equal(game.seats[0].hand.length, 0);
   });
 
   await t.test('auto-fold on disconnect', () => {
