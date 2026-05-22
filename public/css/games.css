@@ -370,9 +370,19 @@
   height: 60px;
   font-size: 11px;
 }
+.run-it-twice-cards .placeholder {
+  width: 42px;
+  height: 60px;
+}
 .run-it-twice-cards .card .card-rank { font-size: 13px; }
 .run-it-twice-cards .card .card-suit { font-size: 16px; }
 .run-it-twice-cards .card .card-corner { font-size: 8px; }
+.run-it-twice-winner {
+  color: #f1c40f;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
 
 /* Stats panel */
 .btn-stats-toggle {

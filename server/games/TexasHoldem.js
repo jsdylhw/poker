@@ -755,6 +755,7 @@ class TexasHoldem extends GameSession {
       runouts.push({
         communityCards: fullCommunity,
         evaluations,
+        winners: [],
       });
     }
 
@@ -795,7 +796,18 @@ class TexasHoldem extends GameSession {
         for (const winner of winGroup) {
           const seatIdx = this._getSeatIndex(winner.playerId);
           if (seatIdx !== -1) {
-            this.seats[seatIdx].wonAmount += share + (remainder > 0 ? 1 : 0);
+            const amount = share + (remainder > 0 ? 1 : 0);
+            this.seats[seatIdx].wonAmount += amount;
+            const existing = runout.winners.find(w => w.playerId === winner.playerId);
+            if (existing) {
+              existing.amount += amount;
+            } else {
+              runout.winners.push({
+                playerId: winner.playerId,
+                amount,
+                hand: winner,
+              });
+            }
             if (remainder > 0) remainder--;
           }
         }

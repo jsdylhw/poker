@@ -23,6 +23,8 @@ class TexasHoldemUI extends BaseGameUI {
     this._communityRenderTimer = null;
     this._resultRenderTimer = null;
     this._winSoundTimer = null;
+    this._runItTwiceRevealStartedAt = 0;
+    this._runItTwiceRevealDoneAt = 0;
   }
 
   render() {
@@ -62,6 +64,8 @@ class TexasHoldemUI extends BaseGameUI {
       this._lastCommCount = 0;
       this._communityAnimationDoneAt = 0;
       this._resultRevealDoneAt = 0;
+      this._runItTwiceRevealStartedAt = 0;
+      this._runItTwiceRevealDoneAt = 0;
       if (this._communityRenderTimer) {
         clearTimeout(this._communityRenderTimer);
         this._communityRenderTimer = null;
@@ -120,12 +124,13 @@ class TexasHoldemUI extends BaseGameUI {
 
   onGameEnd(result) {
     this._updateUI();
-    if (this._isResultRevealPending()) {
+    const soundAt = Math.max(this._resultRevealDoneAt, this._runItTwiceRevealDoneAt);
+    if (Date.now() < soundAt) {
       if (this._winSoundTimer) clearTimeout(this._winSoundTimer);
       this._winSoundTimer = setTimeout(() => {
         this._winSoundTimer = null;
         Sound.win();
-      }, Math.max(0, this._resultRevealDoneAt - Date.now()));
+      }, Math.max(0, soundAt - Date.now()));
     } else {
       Sound.win();
     }
@@ -195,6 +200,33 @@ class TexasHoldemUI extends BaseGameUI {
 
   _isResultRevealPending() {
     return Date.now() < this._resultRevealDoneAt;
+  }
+
+  _runItTwiceRevealState(results) {
+    if (!results?.runItTwice || !results.runouts?.length) return null;
+    if (!this._runItTwiceRevealStartedAt) {
+      this._runItTwiceRevealStartedAt = Date.now();
+    }
+
+    const cardDelay = 1000;
+    const winnerPause = 1600;
+    const runStates = [];
+    let cursor = this._runItTwiceRevealStartedAt;
+    const now = Date.now();
+
+    results.runouts.forEach((runout, idx) => {
+      const totalCards = runout.communityCards.length;
+      const cardsElapsed = now - cursor;
+      const visibleCards = cardsElapsed < 0 ? 0 : Math.min(totalCards, Math.floor(cardsElapsed / cardDelay) + 1);
+      const winnersAt = cursor + (totalCards * cardDelay);
+      const winnersVisible = now >= winnersAt;
+      runStates.push({ idx, visibleCards, winnersVisible });
+      cursor = winnersAt + winnerPause;
+    });
+
+    this._runItTwiceRevealDoneAt = cursor;
+    if (now < cursor) this._scheduleResultRender(Math.min(cursor, now + 250));
+    return { runStates, done: now >= cursor };
   }
 
   _renderCommunityCards(cards, ps) {
@@ -558,24 +590,38 @@ class TexasHoldemUI extends BaseGameUI {
 
     const results = ps.results;
     let html = '';
+    const runItTwiceReveal = this._runItTwiceRevealState(results);
 
     // Run It Twice display
     if (results.runItTwice && results.runouts) {
       html += '<div class="run-it-twice-section">';
       results.runouts.forEach((runout, idx) => {
+        const reveal = runItTwiceReveal?.runStates[idx] || { visibleCards: runout.communityCards.length, winnersVisible: true };
+        const visibleCards = runout.communityCards.slice(0, reveal.visibleCards);
+        const winners = runout.winners || [];
+        const winnerLines = winners.map(w => {
+          const seat = ps.seats.find(s => s.playerId === w.playerId);
+          const name = seat ? seat.playerName : w.playerId;
+          const handName = w.hand?.name ? ` - ${w.hand.name}` : '';
+          return `<div class="run-it-twice-winner">${name} 赢${handName}</div>`;
+        }).join('');
         html += `<div class="run-it-twice-col">
           <span class="run-it-twice-label">Run ${idx + 1}</span>
           <div class="run-it-twice-cards">`;
-        runout.communityCards.forEach(card => {
+        visibleCards.forEach(card => {
           html += CardRenderer.createCard(card, { small: true }).outerHTML;
         });
-        html += '</div></div>';
+        const placeholders = Math.max(0, runout.communityCards.length - visibleCards.length);
+        for (let i = 0; i < placeholders; i++) {
+          html += '<div class="placeholder"></div>';
+        }
+        html += `</div>${reveal.winnersVisible ? winnerLines : ''}</div>`;
       });
       html += '</div>';
     }
 
     const winners = results.winners || [];
-    if (winners.length > 0) {
+    if (winners.length > 0 && (!runItTwiceReveal || runItTwiceReveal.done)) {
       const winnerIds = new Set(winners.map(w => w.playerId));
       const lines = ps.playerStats.map(s => {
         const playerName = s.playerName;

@@ -316,6 +316,8 @@ test('TexasHoldem - Run It Twice', async (t) => {
     const endState = game.getEndState();
     assert.equal(endState.results.runItTwice, true);
     assert.equal(endState.results.runouts.length, 2);
+    assert.ok(endState.results.runouts[0].winners.length > 0);
+    assert.ok(endState.results.runouts[1].winners.length > 0);
     // Verify no duplicate cards between the two runouts' NEW cards
     const saved = game.communityCards;
     const savedIds = new Set(saved.map(c => c.id));
