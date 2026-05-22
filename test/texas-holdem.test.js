@@ -125,6 +125,23 @@ test('TexasHoldem - initialization', async (t) => {
     // Wait, chips are reduced when blinds posted. SB loses 10, BB loses 20.
     assert.equal(totalChips, 1970);
   });
+
+  await t.test('heads-up dealer is small blind and other player is big blind', () => {
+    const room = makeRoom();
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    const pub = game.getPublicState();
+    const dealerSeat = pub.seats[game.dealerIndex];
+    const otherSeat = pub.seats.find((_, i) => i !== game.dealerIndex);
+
+    assert.equal(dealerSeat.isDealer, true);
+    assert.equal(dealerSeat.isSmallBlind, true);
+    assert.equal(dealerSeat.isBigBlind, false);
+    assert.equal(otherSeat.isSmallBlind, false);
+    assert.equal(otherSeat.isBigBlind, true);
+  });
 });
 
 test('TexasHoldem - betting rounds', async (t) => {
@@ -258,6 +275,28 @@ test('TexasHoldem - side pots', async (t) => {
     playHand(game);
     const finalTotal = game.seats.reduce((s, seat) => s + seat.chips + seat.wonAmount, 0);
     assert.equal(finalTotal, 200); // 2 players * 100 default chips
+  });
+
+  await t.test('side pots include folded players contributed chips', () => {
+    const room = makeRoom({ defaultChips: 500 });
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2'), makePlayer('Carl', 'p3')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    game.seats[0].totalBet = 50;
+    game.seats[1].totalBet = 50;
+    game.seats[2].totalBet = 50;
+    game.seats[2].folded = true;
+    game._calculateSidePots();
+    game._awardSidePots([
+      { playerId: 'p1', score: 100 },
+      { playerId: 'p2', score: 10 },
+    ]);
+
+    assert.deepEqual(game.sidePots, [{ amount: 150, eligiblePlayerIds: ['p1', 'p2'] }]);
+    assert.equal(game.seats[0].wonAmount, 150);
+    assert.equal(game.seats[1].wonAmount, 0);
+    assert.equal(game.seats[2].wonAmount, 0);
   });
 });
 
@@ -446,6 +485,36 @@ test('TexasHoldem - edge cases', async (t) => {
     // Winner auto-awarded, now in showdown - process all show/muck
     playHand(game);
     assert.equal(game.handOver, true);
+  });
+
+  await t.test('heads-up fold awards blinds and preserves chip total', () => {
+    const room = makeRoom({ defaultChips: 500, smallBlind: 10, bigBlind: 20 });
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    const folderId = getCurrentPlayer(game);
+    const winnerId = game.seats.find(s => s.playerId !== folderId).playerId;
+    const result = game.handleAction(folderId, 'fold', {});
+    assert.equal(result.error, undefined);
+
+    const folder = game.seats.find(s => s.playerId === folderId);
+    const winner = game.seats.find(s => s.playerId === winnerId);
+
+    assert.equal(game.showdownPhase, true);
+    assert.equal(game.pot, 30);
+    assert.equal(folder.totalBet, 10);
+    assert.equal(winner.totalBet, 20);
+    assert.equal(winner.wonAmount, 30);
+    assert.equal(folder.chips + folder.wonAmount + winner.chips + winner.wonAmount, 1000);
+
+    game.state = 'ended';
+    game.start();
+    const totalAfterNextHandStarts = game.seats.reduce(
+      (sum, seat) => sum + seat.chips + seat.roundBet + seat.wonAmount,
+      0
+    ) + game.pot;
+    assert.equal(totalAfterNextHandStarts, 1000);
   });
 
   await t.test('rebuy cooldown auto-folds for 2 hands', () => {

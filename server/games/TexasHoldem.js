@@ -12,6 +12,8 @@ class TexasHoldem extends GameSession {
     this.pot = 0;
     this.sidePots = [];
     this.dealerIndex = 0;
+    this.smallBlindIndex = -1;
+    this.bigBlindIndex = -1;
     this.currentPlayerIndex = -1;
     this.settings = room.settings;
     this.smallBlind = this.settings.smallBlind;
@@ -81,6 +83,8 @@ class TexasHoldem extends GameSession {
     this.masterDeck = null;
     this.pot = 0;
     this.sidePots = [];
+    this.smallBlindIndex = -1;
+    this.bigBlindIndex = -1;
     this.handOver = false;
     this.results = null;
     this.showdownPhase = false;
@@ -129,6 +133,8 @@ class TexasHoldem extends GameSession {
     // Post blinds
     this.phase = 'preflop';
     // Single master deck for entire hand - no card duplication
+    this._handStartedAt = Date.now();
+    this._handRecordSaved = false;
     this.masterDeck = Deck.createStandard52().shuffle();
 
     // Deal 2 cards to each active player
@@ -139,8 +145,11 @@ class TexasHoldem extends GameSession {
     }
 
     // Post blinds
-    const sbIndex = this._nextActiveSeat(this.dealerIndex);
+    const activeSeatCount = this.seats.filter(s => s.chips > 0 && !s.folded).length;
+    const sbIndex = activeSeatCount === 2 ? this.dealerIndex : this._nextActiveSeat(this.dealerIndex);
     const bbIndex = this._nextActiveSeat(sbIndex);
+    this.smallBlindIndex = sbIndex;
+    this.bigBlindIndex = bbIndex;
 
     if (sbIndex !== -1) {
       const sbSeat = this.seats[sbIndex];
@@ -384,15 +393,10 @@ class TexasHoldem extends GameSession {
         // Collect all pending bets into pot before awarding
         for (const seat of this.seats) {
           this.pot += seat.roundBet;
+          seat.totalBet += seat.roundBet;
           seat.roundBet = 0;
         }
-        this._calculateSidePots();
-        this._awardSidePots([{
-          playerId: remainingPlayers[0].playerId,
-          seatIndex: this._getSeatIndex(remainingPlayers[0].playerId),
-          hand: remainingPlayers[0].hand,
-          score: 0, name: '',
-        }]);
+        this._awardPot([remainingPlayers[0]]);
         this.results = {
           winners: [{ playerId: remainingPlayers[0].playerId, amount: remainingPlayers[0].wonAmount }],
         };
@@ -574,22 +578,24 @@ class TexasHoldem extends GameSession {
   }
 
   _calculateSidePots() {
-    // Sort by totalBet ascending
-    const activeSeats = this.seats
+    // Build pots from every contribution, including folded players' dead money.
+    // Eligibility is still limited to players who have not folded.
+    const contributedSeats = this.seats
       .map((s, i) => ({ ...s, idx: i }))
-      .filter(s => !s.folded)
+      .filter(s => s.totalBet > 0)
       .sort((a, b) => a.totalBet - b.totalBet);
 
     this.sidePots = [];
     let prevLevel = 0;
 
-    for (const seat of activeSeats) {
+    for (const seat of contributedSeats) {
       const contribution = seat.totalBet - prevLevel;
       if (contribution > 0) {
-        const eligible = activeSeats
-          .filter(s => s.totalBet >= seat.totalBet)
+        const contributors = contributedSeats.filter(s => s.totalBet >= seat.totalBet);
+        const eligible = contributors
+          .filter(s => !s.folded)
           .map(s => s.playerId);
-        const potAmount = contribution * eligible.length;
+        const potAmount = contribution * contributors.length;
         this.sidePots.push({ amount: potAmount, eligiblePlayerIds: eligible });
         prevLevel = seat.totalBet;
       }
@@ -611,6 +617,7 @@ class TexasHoldem extends GameSession {
           break;
         }
       }
+      if (winners.length === 0) continue;
 
       const share = Math.floor(sidePot.amount / winners.length);
       let remainder = sidePot.amount - share * winners.length;
@@ -898,12 +905,11 @@ class TexasHoldem extends GameSession {
   }
 
   _isSmallBlind(idx) {
-    return idx === this._nextActiveSeat(this.dealerIndex);
+    return idx === this.smallBlindIndex;
   }
 
   _isBigBlind(idx) {
-    const sb = this._nextActiveSeat(this.dealerIndex);
-    return idx === this._nextActiveSeat(sb);
+    return idx === this.bigBlindIndex;
   }
 
   rebuy(playerId, amount) {

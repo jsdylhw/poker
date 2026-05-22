@@ -478,16 +478,18 @@ class TexasHoldemUI extends BaseGameUI {
       const winnerIds = new Set(winners.map(w => w.playerId));
       const lines = ps.playerStats.map(s => {
         const playerName = s.playerName;
+        const seat = ps.seats.find(ss => ss.playerId === s.playerId);
+        const totalBet = seat ? (seat.totalBet || 0) : 0;
+        const handNet = (s.wonAmount || 0) - totalBet;
+        const netText = `${handNet >= 0 ? '+' : ''}${handNet}`;
         if (winnerIds.has(s.playerId)) {
           const w = winners.find(ww => ww.playerId === s.playerId);
           const handName = w && w.hand ? w.hand.name : '';
-          return `<div class="winner-name">${playerName} 赢了 +${s.wonAmount}</div>
+          const netStyle = handNet >= 0 ? '' : ' style="color:#e74c3c"';
+          return `<div class="winner-name"${netStyle}>${playerName} ${netText}</div>
             ${handName ? `<div class="winner-hand">${handName}</div>` : ''}`;
         } else {
-          // Non-winners always lost this hand: show -totalBet
-          const mySeat = ps.seats.find(ss => ss.playerId === s.playerId);
-          const lost = mySeat ? -(mySeat.totalBet || 0) : (s.current - s.buyin);
-          return `<div class="winner-name" style="color:#e74c3c">${playerName} ${lost}</div>`;
+          return `<div class="winner-name" style="color:#e74c3c">${playerName} ${netText}</div>`;
         }
       }).join('');
       html += `<div class="winner-overlay">${lines}</div>`;
