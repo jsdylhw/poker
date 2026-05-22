@@ -111,6 +111,8 @@ test('RoomManager - leave and disconnect', async (t) => {
     const result = rm.disconnectSocket('sock1');
     assert.ok(result);
     assert.equal(room.players[0].isOnline, false);
+    assert.equal(room.players[0].socketId, null);
+    assert.equal(rm.socketPlayer.get('sock1'), undefined);
   });
 
   await t.test('reconnect updates socket and re-onlines player', () => {

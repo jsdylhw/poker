@@ -565,7 +565,7 @@ test('TexasHoldem - edge cases', async (t) => {
     assert.equal(game.seats[0].hand.length, 0);
   });
 
-  await t.test('auto-fold on disconnect', () => {
+  await t.test('no immediate auto-fold on disconnect', () => {
     const room = makeRoom();
     room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2'), makePlayer('Carl', 'p3')];
     const game = new TexasHoldem(room, mockIO());
@@ -574,6 +574,8 @@ test('TexasHoldem - edge cases', async (t) => {
     const currentPid = getCurrentPlayer(game);
     game.onPlayerDisconnect(currentPid);
     const seat = game.seats.find(s => s.playerId === currentPid);
-    assert.equal(seat.folded, true);
+    // Player should NOT be auto-folded immediately — turn timer handles timeout.
+    // This allows the player to reconnect and resume their turn on refresh.
+    assert.equal(seat.folded, false);
   });
 });

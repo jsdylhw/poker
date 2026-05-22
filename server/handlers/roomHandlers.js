@@ -108,6 +108,12 @@ function registerRoomHandlers(io, socket, roomManager, userManager) {
     if (result && result.room) {
       broadcastRoom(result.room);
       if (result.room.gameSession) {
+        // Broadcast updated game state so online-status dots update immediately
+        io.to(result.room.code).emit('game:turn', result.room.gameSession.getPublicState());
+        for (const p of result.room.players) {
+          const state = result.room.gameSession.getState(p.id);
+          if (p.socketId) io.to(p.socketId).emit('game:dealt', state);
+        }
         result.room.gameSession.onPlayerDisconnect(result.playerId);
       }
     }

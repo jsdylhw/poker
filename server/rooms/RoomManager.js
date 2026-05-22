@@ -84,6 +84,8 @@ class RoomManager {
     const playerId = this.socketPlayer.get(socketId);
     if (!playerId) return null;
 
+    this.socketPlayer.delete(socketId);
+
     const roomCode = this.playerRoom.get(playerId);
     if (!roomCode) return null;
 
@@ -93,6 +95,7 @@ class RoomManager {
     const player = room.getPlayer(playerId);
     if (player) {
       player.isOnline = false;
+      player.socketId = null;
     }
 
     return { room, playerId };

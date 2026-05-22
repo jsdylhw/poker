@@ -942,8 +942,9 @@ class TexasHoldem extends GameSession {
       if (this.handOver || this.state !== 'playing') return;
       const playerId = this.seats[this.currentPlayerIndex]?.playerId;
       if (playerId) {
-        console.log(`[超时] ${playerId} 自动弃牌`);
-        this.handleAction(playerId, 'fold', {});
+        const timeoutAction = this.showdownPhase ? 'muck' : 'fold';
+        console.log(`[超时] ${playerId} 自动${timeoutAction === 'muck' ? '不亮' : '弃牌'}`);
+        this.handleAction(playerId, timeoutAction, {});
         // Broadcast state
         this.io.to(this.room.code).emit('game:turn', this.getPublicState());
         for (const p of this.room.players) {
@@ -1054,9 +1055,12 @@ class TexasHoldem extends GameSession {
   }
 
   onPlayerDisconnect(playerId) {
+    // Let the turn timer handle timeout — if the player reconnects before
+    // the timer expires they can resume their turn. No immediate auto-fold.
     const seatIdx = this._getSeatIndex(playerId);
     if (seatIdx !== -1 && this.currentPlayerIndex === seatIdx && !this.handOver) {
-      this.handleAction(playerId, 'fold', {});
+      const label = this.showdownPhase ? '自动不亮' : '自动弃牌';
+      console.log(`[断线] ${playerId} 断线，等待倒计时结束${label}`);
     }
   }
 
