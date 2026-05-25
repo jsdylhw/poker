@@ -464,7 +464,7 @@
   .player-row { min-width: 120px; padding: 4px 8px; }
   .player-cards .card { width: 24px; height: 36px; }
   .pot-display { font-size: 15px; }
-  .my-hand .card { margin-left: -20px; }
+  .my-hand .card { margin-left: -12px; }
   .my-hand .card:first-child { margin-left: 0; }
   .action-bar { gap: 4px; }
   .action-bar button { padding: 6px 10px; font-size: 11px; min-width: 48px; }
@@ -491,7 +491,7 @@
   .player-chips { font-size: 9px; }
   .player-cards .card { width: 22px; height: 32px; }
   .my-hand-area { bottom: 6px; }
-  .my-hand .card { margin-left: -24px; width: 34px; height: 50px; }
+  .my-hand .card { margin-left: -12px; width: 34px; height: 50px; }
   .my-hand .card:first-child { margin-left: 0; }
   .action-bar { gap: 2px; }
   .action-bar button { padding: 5px 8px; font-size: 10px; }
