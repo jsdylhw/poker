@@ -709,6 +709,22 @@ test('TexasHoldem - edge cases', async (t) => {
     assert.deepEqual(getActions(game, winnerId), ['show', 'muck']);
   });
 
+  await t.test('chosen showdown reveal exposes hand to other players', () => {
+    const room = makeRoom({ defaultChips: 500, smallBlind: 10, bigBlind: 20 });
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    const folderId = getCurrentPlayer(game);
+    const winnerId = game.seats.find(s => s.playerId !== folderId).playerId;
+    assert.equal(game.handleAction(folderId, 'fold', {}).error, undefined);
+    assert.equal(game.handleAction(winnerId, 'show', {}).error, undefined);
+
+    const viewerId = folderId;
+    const winnerSeat = game.getState(viewerId).seats.find(s => s.playerId === winnerId);
+    assert.equal(winnerSeat.hand.length, 2);
+  });
+
   await t.test('heads-up dealer all-in call runs out to showdown without extra actions', () => {
     const room = makeRoom({ defaultChips: 500, smallBlind: 10, bigBlind: 20 });
     room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2')];

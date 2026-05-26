@@ -40,6 +40,7 @@ class TexasHoldemUI extends BaseGameUI {
         <div id="pot-display" class="pot-display">底池: 0</div>
         <div id="seats-container" class="seats-container"></div>
         <div id="winner-area"></div>
+        <div id="center-countdown" class="center-countdown hidden"></div>
         <div id="my-hand-area" class="my-hand-area">
           <div id="my-hand" class="my-hand"></div>
           <div id="action-bar" class="action-bar"></div>
@@ -452,8 +453,9 @@ class TexasHoldemUI extends BaseGameUI {
     if (!ps.isMyTurn || ps.handOver) {
       let html = '';
       const effectiveChips = ps.myEffectiveChips ?? ps.myChips;
-      // Only allow rebuy after hand settlement (handOver)
-      if (ps.handOver && settings.rebuyEnabled !== false && effectiveChips === 0 && !ps.myFolded && !ps.rebuyCooldown) {
+      const canRebuyOutOfHand = effectiveChips === 0 && (ps.handOver || ps.rebuyCooldown >= 0) && (ps.hand?.length || 0) === 0;
+      // A busted player may rebuy while sitting out of the current hand.
+      if (settings.rebuyEnabled !== false && canRebuyOutOfHand && !ps.myFolded) {
         html += this._rebuyHtml(settings);
       }
       let waitMsg = '等待其他玩家操作...';
@@ -472,8 +474,24 @@ class TexasHoldemUI extends BaseGameUI {
     const toCall = maxBet - (ps.myRoundBet || 0);
     const minRaise = maxBet + Math.max(settings.bigBlind || 20, 20);
     const pot = ps.pot || 0;
+    const maxRaise = (ps.myChips || 0) + (ps.myRoundBet || 0);
+    const canRaiseWithoutAllIn = actions.includes('raise') && minRaise <= maxRaise;
+    const callAmount = Math.min(Math.max(0, toCall), ps.myChips || 0);
+    const callLabel = callAmount < toCall ? `跟注 All-in ${callAmount}` : `跟注 ${toCall}`;
+    const getRaiseAmount = () => {
+      const input = document.getElementById('raise-custom');
+      const raw = input ? parseInt(input.value, 10) : minRaise;
+      const amount = Number.isFinite(raw) ? raw : minRaise;
+      return Math.max(minRaise, Math.min(maxRaise, amount));
+    };
 
     let html = '';
+    html += `
+      <div class="bet-status">
+        <span>需跟注 <strong>${Math.max(0, toCall)}</strong></span>
+        <span>筹码 <strong>${this._formatChips(ps.myChips || 0)}</strong></span>
+      </div>
+    `;
 
     if (actions.includes('fold')) {
       html += '<button class="btn-danger action-btn" data-action="fold">弃牌</button>';
@@ -481,19 +499,22 @@ class TexasHoldemUI extends BaseGameUI {
     if (actions.includes('check')) {
       html += '<button class="btn-secondary action-btn" data-action="check">过牌</button>';
     }
-    if (actions.includes('call') && toCall > 0) {
-      html += `<button class="btn-primary action-btn" data-action="call">跟注 ${toCall}</button>`;
+    if (actions.includes('call') && toCall > 0 && callAmount > 0) {
+      html += `<button class="btn-primary action-btn" data-action="call">${callLabel}</button>`;
     }
-    if (actions.includes('raise')) {
+    if (canRaiseWithoutAllIn) {
       const halfPot = Math.max(minRaise, Math.floor(pot / 2));
       const fullPot = Math.max(minRaise, pot);
+      const quickBets = [
+        { label: '下半池', amount: halfPot },
+        { label: '下全池', amount: fullPot },
+      ].filter(b => b.amount <= maxRaise);
       html += `
         <div class="raise-btns">
-          <button class="btn-success action-btn raise-quick" data-amount="${halfPot}">1/2池 ${halfPot}</button>
-          <button class="btn-success action-btn raise-quick" data-amount="${fullPot}">底池 ${fullPot}</button>
+          ${quickBets.map(b => `<button class="btn-success action-btn raise-quick" data-amount="${b.amount}">${b.label} ${b.amount}</button>`).join('')}
           <div class="raise-input">
-            <input type="number" id="raise-custom" min="${minRaise}" max="${ps.myChips + (ps.myRoundBet || 0)}" value="${minRaise}" placeholder="${minRaise}">
-            <button class="btn-success action-btn" data-action="raise" id="btn-raise">加注 <span id="raise-amount">${minRaise}</span></button>
+            <input type="number" id="raise-custom" min="${minRaise}" max="${maxRaise}" value="${minRaise}" placeholder="${minRaise}">
+            <button class="btn-success action-btn" data-action="raise" id="btn-raise">自定义 <span id="raise-amount">${minRaise}</span></button>
           </div>
         </div>
       `;
@@ -522,7 +543,7 @@ class TexasHoldemUI extends BaseGameUI {
       // Enter key triggers raise
       raiseInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
-          SocketClient.emit('game:action', { action: 'raise', data: { amount: parseInt(raiseInput.value) } });
+          SocketClient.emit('game:action', { action: 'raise', data: { amount: getRaiseAmount() } });
         }
       });
     }
@@ -533,8 +554,7 @@ class TexasHoldemUI extends BaseGameUI {
         const action = btn.dataset.action;
         let data = {};
         if (action === 'raise') {
-          const input = document.getElementById('raise-custom');
-          data.amount = input ? parseInt(input.value) : 0;
+          data.amount = getRaiseAmount();
         }
         SocketClient.emit('game:action', { action, data });
       });
@@ -566,7 +586,7 @@ class TexasHoldemUI extends BaseGameUI {
   }
 
   _renderTimer(ps) {
-    const el = document.getElementById('turn-timer');
+    const el = document.getElementById('center-countdown');
     if (!el) return;
 
     if ((ps.showdownPhase || ps.isMyTurn) && !ps.handOver) {
@@ -574,23 +594,21 @@ class TexasHoldemUI extends BaseGameUI {
       this.timerSeconds = ps.showdownPhase ? (ps.showdownTimeLeft || 10) : (ps.turnTimeLeft || 30);
       el.classList.remove('hidden');
       el.classList.remove('urgent');
-      el.textContent = ps.showdownPhase ? `亮牌 ${this.timerSeconds}` : this.timerSeconds;
+      el.textContent = this._timerText(ps, this.timerSeconds);
       if (ps.showdownPhase && this.timerSeconds <= 5 && !this._showdownUrgentPrompted) {
         this._showdownUrgentPrompted = true;
         Sound.countdownAlert();
-        this.showMessage(`亮牌倒计时 ${this.timerSeconds} 秒`, 1600);
       }
 
       this.timerInterval = setInterval(() => {
         this.timerSeconds = Math.max(0, this.timerSeconds - 1);
-        el.textContent = ps.showdownPhase ? `亮牌 ${this.timerSeconds}` : this.timerSeconds;
+        el.textContent = this._timerText(ps, this.timerSeconds);
         if (this.timerSeconds <= 10) {
           el.classList.add('urgent');
           Sound.tick();
           if (ps.showdownPhase && this.timerSeconds <= 5 && !this._showdownUrgentPrompted) {
             this._showdownUrgentPrompted = true;
             Sound.countdownAlert();
-            this.showMessage(`亮牌倒计时 ${this.timerSeconds} 秒`, 1600);
           }
         }
         // Let server handle timeout via its own timer
@@ -600,6 +618,14 @@ class TexasHoldemUI extends BaseGameUI {
       el.classList.add('hidden');
       this._showdownUrgentPrompted = false;
     }
+  }
+
+  _timerText(ps, seconds) {
+    if (ps.showdownPhase) {
+      if (ps.isMyTurn) return seconds <= 5 ? `最后 ${seconds}s 请选择` : `亮牌倒计时 ${seconds}s`;
+      return seconds <= 5 ? `最后 ${seconds}s 后下一局` : `${seconds}s 后自动下一局`;
+    }
+    return `你的回合 ${seconds}s`;
   }
 
   _renderWinner(ps, pub) {
