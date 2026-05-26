@@ -47,9 +47,10 @@ const Sound = (() => {
   function allin()  { tone([300, 500, 800], 0.15, 'square', 0.1); }
   function win()    { tone([523, 659, 784, 1047], 0.2, 'sine', 0.12); }
   function tick()   { play(1000, 0.04, 'sine', 0.06); }
+  function countdownAlert() { tone([880, 660, 880], 0.12, 'triangle', 0.11); }
   function check()  { play(500, 0.05, 'sine', 0.06); }
   function yourTurn(){ tone([600, 900], 0.12, 'sine', 0.1); }
   function shuffleDeck() { for (let i = 0; i < 6; i++) setTimeout(() => play(300 + Math.random() * 600, 0.03, 'triangle', 0.04), i * 40); }
 
-  return { init, deal, chip, bet, raise, fold, allin, win, tick, check, yourTurn, shuffleDeck, get enabled() { return enabled; }, set enabled(v) { enabled = v; } };
+  return { init, deal, chip, bet, raise, fold, allin, win, tick, countdownAlert, check, yourTurn, shuffleDeck, get enabled() { return enabled; }, set enabled(v) { enabled = v; } };
 })();

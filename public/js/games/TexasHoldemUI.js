@@ -25,6 +25,7 @@ class TexasHoldemUI extends BaseGameUI {
     this._winSoundTimer = null;
     this._runItTwiceRevealStartedAt = 0;
     this._runItTwiceRevealDoneAt = 0;
+    this._showdownUrgentPrompted = false;
   }
 
   render() {
@@ -412,7 +413,11 @@ class TexasHoldemUI extends BaseGameUI {
     // Showdown phase: show/muck buttons
     if (ps.showdownPhase && ps.isMyTurn) {
       const actions = ps.validActions || [];
+      const urgent = ps.showdownTimeLeft != null && ps.showdownTimeLeft <= 5;
+      const label = urgent ? `最后 ${ps.showdownTimeLeft}s，请选择` : `亮牌倒计时 ${ps.showdownTimeLeft}s`;
+      const timeText = ps.showdownTimeLeft != null ? `<span style="color:${urgent ? '#e74c3c' : '#f1c40f'};font-size:13px;font-weight:${urgent ? 'bold' : 'normal'}">${label}</span>` : '';
       bar.innerHTML = [
+        timeText,
         actions.includes('show')
           ? '<button class="btn-success action-btn" data-action="show">亮牌</button>'
           : '',
@@ -430,13 +435,17 @@ class TexasHoldemUI extends BaseGameUI {
 
     // Showdown phase: winner auto-shown, waiting for others
     if (ps.showdownPhase && ps.isShowdownWinner) {
-      bar.innerHTML = '<span style="color:#f1c40f;font-size:14px;font-weight:bold">赢家 - 已亮牌</span>';
+      const urgent = ps.showdownTimeLeft != null && ps.showdownTimeLeft <= 5;
+      const timeText = ps.showdownTimeLeft != null ? ` · ${urgent ? '最后 ' : ''}${ps.showdownTimeLeft}s 后下一局` : '';
+      bar.innerHTML = `<span style="color:#f1c40f;font-size:14px;font-weight:bold">赢家 - 已亮牌${timeText}</span>`;
       return;
     }
 
     // Showdown phase: already decided or waiting
     if (ps.showdownPhase) {
-      bar.innerHTML = '<span style="color:rgba(255,255,255,0.5);font-size:13px">等待其他人选择...</span>';
+      const urgent = ps.showdownTimeLeft != null && ps.showdownTimeLeft <= 5;
+      const timeText = ps.showdownTimeLeft != null ? `${urgent ? '最后 ' : ''}${ps.showdownTimeLeft}s 后自动下一局` : '等待摊牌倒计时...';
+      bar.innerHTML = `<span style="color:${urgent ? '#e74c3c' : 'rgba(255,255,255,0.65)'};font-size:13px;font-weight:${urgent ? 'bold' : 'normal'}">${timeText}</span>`;
       return;
     }
 
@@ -560,22 +569,36 @@ class TexasHoldemUI extends BaseGameUI {
     const el = document.getElementById('turn-timer');
     if (!el) return;
 
-    if (ps.isMyTurn && !ps.handOver) {
+    if ((ps.showdownPhase || ps.isMyTurn) && !ps.handOver) {
       if (this.timerInterval) clearInterval(this.timerInterval);
-      this.timerSeconds = ps.turnTimeLeft || 30;
+      this.timerSeconds = ps.showdownPhase ? (ps.showdownTimeLeft || 10) : (ps.turnTimeLeft || 30);
       el.classList.remove('hidden');
       el.classList.remove('urgent');
-      el.textContent = this.timerSeconds;
+      el.textContent = ps.showdownPhase ? `亮牌 ${this.timerSeconds}` : this.timerSeconds;
+      if (ps.showdownPhase && this.timerSeconds <= 5 && !this._showdownUrgentPrompted) {
+        this._showdownUrgentPrompted = true;
+        Sound.countdownAlert();
+        this.showMessage(`亮牌倒计时 ${this.timerSeconds} 秒`, 1600);
+      }
 
       this.timerInterval = setInterval(() => {
-        this.timerSeconds--;
-        el.textContent = this.timerSeconds;
-        if (this.timerSeconds <= 10) { el.classList.add('urgent'); Sound.tick(); }
+        this.timerSeconds = Math.max(0, this.timerSeconds - 1);
+        el.textContent = ps.showdownPhase ? `亮牌 ${this.timerSeconds}` : this.timerSeconds;
+        if (this.timerSeconds <= 10) {
+          el.classList.add('urgent');
+          Sound.tick();
+          if (ps.showdownPhase && this.timerSeconds <= 5 && !this._showdownUrgentPrompted) {
+            this._showdownUrgentPrompted = true;
+            Sound.countdownAlert();
+            this.showMessage(`亮牌倒计时 ${this.timerSeconds} 秒`, 1600);
+          }
+        }
         // Let server handle timeout via its own timer
       }, 1000);
     } else {
       if (this.timerInterval) clearInterval(this.timerInterval);
       el.classList.add('hidden');
+      this._showdownUrgentPrompted = false;
     }
   }
 
@@ -583,7 +606,7 @@ class TexasHoldemUI extends BaseGameUI {
     const area = document.getElementById('winner-area');
     if (!area) return;
 
-    if (!pub.handOver || !ps.results || this._isResultRevealPending()) {
+    if (!(pub.handOver || pub.showdownPhase) || !ps.results || this._isResultRevealPending()) {
       area.innerHTML = '';
       return;
     }
