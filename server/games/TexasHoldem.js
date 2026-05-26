@@ -1026,9 +1026,7 @@ class TexasHoldem extends GameSession {
     if (seatIdx === -1) return { error: '玩家不在座位上' };
 
     const seat = this.seats[seatIdx];
-    const canRebuyDuringHand = (this.rebuyCooldown[playerId] || 0) > 0
-      && seat.chips === 0
-      && seat.hand.length === 0;
+    const canRebuyDuringHand = seat.chips === 0 && seat.hand.length === 0;
     if (!this.handOver && !canRebuyDuringHand) return { error: '本局结束后才能补筹码' };
     // Only allow rebuy when chips = 0 (lost an all-in)
     if (seat.chips + (seat.wonAmount || 0) > 0) return { error: '只能在输光 all-in 后补筹码' };

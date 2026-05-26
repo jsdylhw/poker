@@ -513,6 +513,23 @@ test('TexasHoldem - rebuy', async (t) => {
     assert.equal(result.cooldown, 1);
     assert.equal(game.rebuyCooldown.p1, 1);
   });
+
+  await t.test('allows 0-chip sitting-out player to rebuy during an active hand', () => {
+    const room = makeRoom({ rebuyEnabled: true, rebuyMin: 100, rebuyMax: 1000, defaultChips: 500 });
+    room.players = [makePlayer('Alice', 'p1'), makePlayer('Bob', 'p2'), makePlayer('Carl', 'p3')];
+    const game = new TexasHoldem(room, mockIO());
+    game.start();
+
+    game.seats[2].chips = 0;
+    game.seats[2].hand = [];
+    game.rebuyCooldown.p3 = 0;
+    game.state = 'playing';
+    game.handOver = false;
+
+    const result = game.rebuy('p3', 500);
+    assert.equal(result.error, undefined);
+    assert.equal(game.seats[2].chips, 500);
+  });
 });
 
 test('TexasHoldem - multi-hand', async (t) => {

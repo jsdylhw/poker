@@ -27,6 +27,7 @@ const SocketClient = (() => {
     });
 
     socket.on('game:started', (data) => {
+      AppState.set('gameResult', null);
       AppState.set('gameStarted', data);
       Router.navigate('game');
     });
