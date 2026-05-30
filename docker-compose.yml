@@ -1,0 +1,10 @@
+services:
+  poker:
+    build: .
+    image: poker-platform:latest
+    container_name: poker
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production

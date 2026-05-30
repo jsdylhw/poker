@@ -57,6 +57,32 @@ npm start
 PORT=8080 npm start
 ```
 
+## Docker 部署
+
+### 直接拉取已发布镜像
+
+```bash
+docker run -d --name poker -p 3000:3000 euclidddd/poker:latest
+```
+
+主机端口随你映射，例如 `-p 8080:3000` 就用 8080 访问。
+
+### 从源码构建
+
+```bash
+docker build -t poker-platform .
+docker run -d --name poker -p 3000:3000 poker-platform
+```
+
+### docker compose
+
+```bash
+docker compose up -d                 # 默认主机 3000
+HOST_PORT=8080 docker compose up -d  # 主机 8080
+```
+
+容器内固定监听 3000 端口；如需修改，传 `-e PORT=4000` 并把 `-p` 右侧改为 4000。
+
 ## 房间设置
 
 房主在房间大厅可展开设置面板：
